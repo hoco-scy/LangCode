@@ -6,9 +6,8 @@ __pycache__/
 dist/
 build/
 
-# uv / venv - 子模块不创建自己的虚拟环境，使用父仓库的 .venv
+# uv / venv
 .venv
-.python-version
 
 # IDE
 .idea/
