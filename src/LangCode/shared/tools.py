@@ -7,6 +7,10 @@ from langchain.tools import tool
 from pydantic import BaseModel, Field
 from typing import Optional, Literal
 
+from LangCode.shared.logger import get_logger
+
+log = get_logger("tools")
+
 
 class ReadFileInput(BaseModel):
     file_path: str = Field(description="The path to the file to read")
@@ -16,16 +20,21 @@ class ReadFileInput(BaseModel):
 @tool("read_file", args_schema=ReadFileInput)
 def read_file(file_path: str, encode: str = "utf-8") -> dict:
     """读取文件内容"""
+    log.info("read_file: file_path=%s encode=%s", file_path, encode)
     try:
         with open(file_path, mode="r", encoding=encode) as f:
             content = f.read()
+            log.debug("read_file 成功: %d 字符", len(content))
             return {"content": content, "success": True}
 
     except FileNotFoundError:
+        log.warning("read_file 失败: 文件不存在 %s", file_path)
         return {"content": "", "success": False, "error": "File not found"}
     except UnicodeDecodeError:
+        log.warning("read_file 失败: 编码错误 %s", file_path)
         return {"content": "", "success": False, "error": "Encoding error"}
     except Exception as e:
+        log.error("read_file 异常: %s", e)
         return {"content": "", "success": False, "error": e}
 
 
@@ -34,15 +43,17 @@ class FetchAPIInput(BaseModel):
 
 
 @tool("fetch_api", args_schema=FetchAPIInput)
-async def fetch_api(url: str) -> dict:
-    """异步请求外部 API"""
+def fetch_api(url: str) -> dict:
+    """请求外部 API"""
+    log.info("fetch_api: url=%s", url)
     try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(url)
-            return {"content": resp.content, "success": True}
-
+        with httpx.Client() as client:
+            resp = client.get(url)
+            log.debug("fetch_api 成功: status=%d size=%d", resp.status_code, len(resp.content))
+            return {"content": resp.content.decode(), "success": True}
     except Exception as e:
-        return {"content": "", "success": False, "error": e}
+        log.error("fetch_api 失败: %s", e)
+        return {"content": "", "success": False, "error": str(e)}
 
 
 class RunCommandInput(BaseModel):
@@ -55,6 +66,7 @@ class RunCommandInput(BaseModel):
 @tool("execute_shell", args_schema=RunCommandInput)
 def execute_shell(command: str, timeout: int) -> dict:
     """执行 shell 命令"""
+    log.info("execute_shell: command=%s timeout=%ds", command, timeout)
     try:
         result = subprocess.run(
             command,
@@ -63,6 +75,9 @@ def execute_shell(command: str, timeout: int) -> dict:
             text=True,
             timeout=timeout  # 防止命令挂死
         )
+        log.debug("execute_shell 完成: return_code=%d", result.returncode)
+        if result.returncode != 0:
+            log.warning("execute_shell 非零退出: stderr=%s", result.stderr[:200])
         return {
             "output": result.stdout,
             "error": result.stderr if result.returncode != 0 else None,
@@ -70,6 +85,7 @@ def execute_shell(command: str, timeout: int) -> dict:
             "return_code": result.returncode,
         }
     except subprocess.TimeoutExpired:
+        log.warning("execute_shell 超时: %ds", timeout)
         return {"output": None, "error": f"命令执行超时{timeout}s", "success": False}
 
 
@@ -78,24 +94,39 @@ class RunPythonInput(BaseModel):
     timeout: int = Field(default=15, ge=1, le=60, description="超时秒数，最长 60 秒")
 
 
-# 注入到子进程的沙箱 wrapper，限制资源并屏蔽危险模块
+import sys
+import subprocess
+import platform
+import threading
+import psutil
+
+def _memory_watchdog(proc: subprocess.Popen, limit_mb: int):
+    """在独立线程中监控子进程内存，超限直接 kill"""
+    limit_bytes = limit_mb * 1024 * 1024
+    try:
+        ps = psutil.Process(proc.pid)
+        while proc.poll() is None:  # 子进程还活着
+            try:
+                mem = ps.memory_info().rss
+                if mem > limit_bytes:
+                    log.warning("run_python 内存超限: %dMB > %dMB，强制终止", mem // 1024 // 1024, limit_mb)
+                    proc.kill()
+                    return
+            except psutil.NoSuchProcess:
+                return
+            threading.Event().wait(0.2)  # 每 200ms 检查一次
+    except Exception as e:
+        log.warning("watchdog 异常: %s", e)
+
+
 _SANDBOX_WRAPPER = r"""
 import sys
-import resource
 
-# ---------- 资源限制 ----------
-# 内存上限 256 MB
-resource.setrlimit(resource.RLIMIT_AS, (256 * 1024 * 1024, 256 * 1024 * 1024))
-# 禁止创建新子进程
-resource.setrlimit(resource.RLIMIT_NPROC, (0, 0))
-
-# ---------- 模块黑名单 ----------
 _BLOCKED = {
     "os", "subprocess", "socket", "shutil", "pathlib",
     "ctypes", "importlib", "multiprocessing", "threading",
     "signal", "pty", "fcntl", "termios",
 }
-
 _real_import = __builtins__.__import__ if hasattr(__builtins__, "__import__") else __import__
 
 def _safe_import(name, *args, **kwargs):
@@ -109,64 +140,62 @@ if isinstance(__builtins__, dict):
 else:
     __builtins__.__import__ = _safe_import
 
-# ---------- 执行用户代码 ----------
 USER_CODE_PLACEHOLDER
 """
 
 
 @tool("run_python", args_schema=RunPythonInput)
 def run_python(code: str, timeout: int = 15) -> dict:
-    """
-    在隔离的子进程中执行 Python 代码。
-    - 超时强制终止，不影响主进程
-    - 内存限制 256 MB
-    - 禁止访问 os / subprocess / socket 等危险模块
-    - 禁止创建新子进程或线程
-    返回 stdout 输出、stderr、是否成功。
-    """
+    """在隔离子进程中执行 Python 代码，跨平台支持 Windows/Unix"""
+    code_preview = code[:200].replace("\n", " ")
+    log.info("run_python: timeout=%ds code=%s...", timeout, code_preview)
+
     wrapped = _SANDBOX_WRAPPER.replace("USER_CODE_PLACEHOLDER", code)
 
     try:
-        result = subprocess.run(
+        proc = subprocess.Popen(
             [sys.executable, "-c", wrapped],
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
-            # 不继承父进程环境变量，减少信息泄露
             env={"PYTHONPATH": ""},
         )
-    except subprocess.TimeoutExpired:
-        return {
-            "success": False,
-            "output": None,
-            "error": f"执行超时（>{timeout}s），进程已强制终止",
-        }
     except Exception as e:
-        return {
-            "success": False,
-            "output": None,
-            "error": f"启动子进程失败：{e}",
-        }
+        log.error("run_python 启动失败: %s", e)
+        return {"success": False, "output": None, "error": f"启动子进程失败：{e}"}
 
-    stdout = result.stdout.strip() or None
-    stderr = result.stderr.strip() or None
-    success = result.returncode == 0
+    # 启动内存监控线程（跨平台）
+    watchdog = threading.Thread(
+        target=_memory_watchdog, args=(proc, 256), daemon=True
+    )
+    watchdog.start()
+
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
+        log.warning("run_python 超时: >%ds", timeout)
+        return {"success": False, "output": None,
+                "error": f"执行超时（>{timeout}s），进程已强制终止"}
+
+    watchdog.join(timeout=1)
+
+    stdout = stdout.strip() or None
+    stderr = stderr.strip() or None
+    success = proc.returncode == 0
 
     if success:
-        return {
-            "success": True,
-            "output": stdout,
-            "error": None,
-        }
+        log.debug("run_python 成功: output=%s", (stdout or "")[:200])
+        return {"success": True, "output": stdout, "error": None}
     else:
-        # 过滤掉 wrapper 内部的堆栈帧，只暴露用户代码的错误
-        user_error = _extract_user_error(stderr)
-        return {
-            "success": False,
-            "output": stdout,  # 出错前可能已有部分输出
-            "error": user_error,
-        }
-
+        # 区分内存超限 vs 普通错误
+        if proc.returncode == -9 or "MemoryError" in (stderr or ""):
+            error = "内存超限（>256MB），进程已强制终止"
+        else:
+            error = _extract_user_error(stderr)
+        log.warning("run_python 失败: error=%s", error)
+        return {"success": False, "output": stdout, "error": error}
 
 def _extract_user_error(stderr: str | None) -> str | None:
     """
