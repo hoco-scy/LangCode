@@ -12,3 +12,6 @@ build/
 # IDE
 .idea/
 .vscode/
+
+# Runtime data
+.langcode/
