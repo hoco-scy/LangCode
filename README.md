@@ -8,6 +8,7 @@
 3. reflection与自我修正
 4. MCP
 
+```
 LangCode/
 ├── src/
 │   ├── main.py                   # 程序入口
@@ -24,6 +25,8 @@ LangCode/
 │       ├── llm.py                # LLM 初始化
 │       ├── state.py              # State TypedDict 定义
 │       └── tools.py              # 共享工具函数
+
+```
 
 各文件的职责说明
 
