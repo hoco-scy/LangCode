@@ -1,6 +1,8 @@
-# 目前实现文件读取、阅读网站、shell执行、Python运行 四个基础工具
+# 目前实现文件读取、阅读网站、shell执行、Python运行、文件写入、文件编辑、文件搜索
 import subprocess
 import sys
+import os
+import glob as _glob
 
 import httpx
 from langchain.tools import tool
@@ -14,7 +16,7 @@ log = get_logger("tools")
 
 class ReadFileInput(BaseModel):
     file_path: str = Field(description="The path to the file to read")
-    encode: str = Field(description="The encoding of the file")
+    encode: str = Field(default="utf-8", description="The encoding of the file")
 
 
 @tool("read_file", args_schema=ReadFileInput)
@@ -213,7 +215,84 @@ def _extract_user_error(stderr: str | None) -> str | None:
     return stderr
 
 
-all_tools = [read_file, fetch_api, execute_shell, run_python]
+class WriteFileInput(BaseModel):
+    file_path: str = Field(description="要写入的文件路径")
+    content: str = Field(description="要写入的内容")
+    encode: str = Field(default="utf-8", description="文件编码")
+
+
+@tool("write_file", args_schema=WriteFileInput)
+def write_file(file_path: str, content: str, encode: str = "utf-8") -> dict:
+    """写入文件内容，如果文件不存在会自动创建（包括父目录）"""
+    log.info("write_file: file_path=%s len=%d", file_path, len(content))
+    try:
+        os.makedirs(os.path.dirname(file_path) or ".", exist_ok=True)
+        with open(file_path, mode="w", encoding=encode) as f:
+            f.write(content)
+        log.debug("write_file 成功: %s", file_path)
+        return {"success": True, "file_path": file_path, "bytes_written": len(content.encode(encode))}
+    except Exception as e:
+        log.error("write_file 失败: %s", e)
+        return {"success": False, "error": str(e)}
+
+
+class EditFileInput(BaseModel):
+    file_path: str = Field(description="要编辑的文件路径")
+    old_text: str = Field(description="要被替换的原始文本（必须精确匹配文件中的内容）")
+    new_text: str = Field(description="替换后的新文本")
+
+
+@tool("edit_file", args_schema=EditFileInput)
+def edit_file(file_path: str, old_text: str, new_text: str) -> dict:
+    """精确替换文件中的指定文本。old_text 必须与文件中的内容完全匹配（包括缩进和换行）。"""
+    log.info("edit_file: file_path=%s old_len=%d new_len=%d", file_path, len(old_text), len(new_text))
+    try:
+        with open(file_path, mode="r", encoding="utf-8") as f:
+            content = f.read()
+
+        count = content.count(old_text)
+        if count == 0:
+            log.warning("edit_file: 未找到匹配文本")
+            return {"success": False, "error": "未在文件中找到匹配的文本，请检查 old_text 是否精确匹配"}
+        if count > 1:
+            log.warning("edit_file: 匹配到 %d 处，需要唯一匹配", count)
+            return {"success": False, "error": f"匹配到 {count} 处相同文本，请提供更精确的上下文使其唯一"}
+
+        new_content = content.replace(old_text, new_text, 1)
+        with open(file_path, mode="w", encoding="utf-8") as f:
+            f.write(new_content)
+        log.debug("edit_file 成功: %s", file_path)
+        return {"success": True, "file_path": file_path}
+    except FileNotFoundError:
+        log.warning("edit_file: 文件不存在 %s", file_path)
+        return {"success": False, "error": f"文件不存在: {file_path}"}
+    except Exception as e:
+        log.error("edit_file 异常: %s", e)
+        return {"success": False, "error": str(e)}
+
+
+class SearchFilesInput(BaseModel):
+    pattern: str = Field(description="glob 匹配模式，如 '**/*.py' 或 'src/**/*.json'")
+    directory: str = Field(default=".", description="搜索的根目录，默认为当前目录")
+
+
+@tool("search_files", args_schema=SearchFilesInput)
+def search_files(pattern: str, directory: str = ".") -> dict:
+    """使用 glob 模式搜索文件，返回匹配的文件路径列表"""
+    log.info("search_files: pattern=%s directory=%s", pattern, directory)
+    try:
+        full_pattern = os.path.join(directory, pattern)
+        matches = _glob.glob(full_pattern, recursive=True)
+        # 过滤掉 __pycache__ 和 .git 等目录
+        matches = [m for m in matches if "__pycache__" not in m and ".git" not in m]
+        log.debug("search_files 找到 %d 个文件", len(matches))
+        return {"success": True, "files": matches[:100], "total": len(matches)}
+    except Exception as e:
+        log.error("search_files 异常: %s", e)
+        return {"success": False, "error": str(e)}
+
+
+all_tools = [read_file, fetch_api, execute_shell, run_python, write_file, edit_file, search_files]
 
 if __name__ == "__main__":
     from langchain_core.utils.function_calling import convert_to_openai_tool

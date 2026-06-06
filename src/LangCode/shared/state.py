@@ -1,32 +1,40 @@
-from typing import Literal, Annotated, TypedDict
-import pydantic
-from langgraph.graph import StateGraph, END, add_messages
-from langgraph.types import interrupt, Command
-from langchain_core.messages import AnyMessage, AIMessage, HumanMessage
+from typing import Literal, Annotated, Optional, TypedDict
+from operator import add
+from langgraph.graph import add_messages
+from langchain_core.messages import AnyMessage
+
 
 class LCState(TypedDict):
+    # === 对话 ===
+    messages: Annotated[list[AnyMessage], add_messages]
 
-    # 对话相关状态，
-    messages: Annotated[list[AnyMessage], add_messages]  # 对话历史
+    # === 用户信息 ===
+    user_name: str
+    platform: Literal["windows", "linux", "mac"]
 
-    # 用户信息相关状态
-    user_name: str                           # 用户姓名
+    # === 工具 ===
+    tool_retry_count: int
 
-    platform: Literal["windows", "linux", "mac"]  # 用户操作系统平台
-    
-    # 工具相关状态
-    tool_retry_count: int   # 工具重试次数
+    # === Agent 路由 ===
+    current_agent: Literal["supervisor", "code", "research", "review"]
 
-    # 当前智能体状态
-    current_agent: Literal["supervisor"]  # 当前智能体名称
+    # === 模式 ===
+    dangerous_edit_mode: bool
+    strict_mode: bool
 
-    # dangerous 状态
-    dangerous_edit_mode: bool   # 是否处于危险状态（所有编辑自动接受，不做审查）
-    
-    # STRICT_MODE 状态
-    strict_mode: bool  # 是否处于严格模式（所有生成的代码都需要审查）
+    # === 计数 ===
+    content_generation_count: int
+    tool_calls_count: int
+    code_generation_count: int
 
-    # 内容生成相关状态
-    content_generation_count: int  # 内容生成次数
-    tool_calls_count: int   # 工具调用次数
-    code_generation_count: int   # 代码生成次数
+    # === 记忆 ===
+    memory_context: str                    # 检索到的相关记忆，注入 LLM 上下文
+
+    # === 规划 ===
+    current_plan: Optional[dict]           # 当前执行计划（JSON 序列化的 Plan）
+    plan_step_index: int                   # 当前执行到第几步
+
+    # === 多Agent ===
+    task_description: str                  # 当前任务描述
+    delegated_to: Optional[str]            # 委托给哪个子 agent
+    sub_agent_results: Annotated[list[dict], add]  # 子 agent 返回结果
