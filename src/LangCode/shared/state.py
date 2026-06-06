@@ -6,7 +6,7 @@ from langchain_core.messages import AnyMessage, AIMessage, HumanMessage
 
 class LCState(TypedDict):
 
-    # 对话相关状态
+    # 对话相关状态，
     messages: Annotated[list[AnyMessage], add_messages]  # 对话历史
 
     # 用户信息相关状态
