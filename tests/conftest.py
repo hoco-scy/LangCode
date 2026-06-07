@@ -6,6 +6,13 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 
 @pytest.fixture
+def memory_store():
+    """内存 SQLite 记忆存储"""
+    from LangCode.memory.store import SQLiteMemoryStore
+    return SQLiteMemoryStore(db_path=":memory:")
+
+
+@pytest.fixture
 def mock_llm():
     """模拟 LLM"""
     return MagicMock()
