@@ -28,3 +28,17 @@ def ai_tool_message():
 def ai_plain_message():
     """纯文本 AI 消息（无工具调用）"""
     return AIMessage(content="直接回复用户")
+
+
+@pytest.fixture
+def sample_plan():
+    """示例计划（3 步骤）"""
+    from LangCode.planning.schema import Plan, PlanStep
+    return Plan(
+        goal="测试目标",
+        steps=[
+            PlanStep(step_id=1, description="步骤一"),
+            PlanStep(step_id=2, description="步骤二"),
+            PlanStep(step_id=3, description="步骤三"),
+        ]
+    )
