@@ -1,0 +1,100 @@
+"""agents/supervisor/graph.py — 路由纯函数测试"""
+
+from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.constants import END
+
+from LangCode.agents.supervisor.graph import (
+    _should_use_tools,
+    _increment_retry,
+    _should_plan,
+    _plan_or_end,
+    _after_step,
+    SupervisorAgent,
+)
+from LangCode.planning.schema import Plan, PlanStep
+
+
+class TestShouldUseTools:
+    def test_tool_calls_returns_tools(self, ai_tool_message):
+        state = {"messages": [HumanMessage(content="hi"), ai_tool_message]}
+        assert _should_use_tools(state) == "tools"
+
+    def test_plain_message_returns_end(self, ai_plain_message):
+        state = {"messages": [HumanMessage(content="hi"), ai_plain_message]}
+        assert _should_use_tools(state) == END
+
+
+class TestIncrementRetry:
+    def test_increments_from_zero(self):
+        state = {"tool_retry_count": 0}
+        assert _increment_retry(state) == {"tool_retry_count": 1}
+
+    def test_increments_from_existing(self):
+        state = {"tool_retry_count": 5}
+        assert _increment_retry(state) == {"tool_retry_count": 6}
+
+    def test_defaults_to_zero(self):
+        state = {}
+        assert _increment_retry(state) == {"tool_retry_count": 1}
+
+
+class TestShouldPlan:
+    def test_no_plan_returns_react(self):
+        state = {"current_plan": None}
+        assert _should_plan(state) == "react"
+
+    def test_active_plan_with_pending_steps(self, sample_plan):
+        state = {"current_plan": sample_plan.model_dump()}
+        assert _should_plan(state) == "step_executor"
+
+    def test_completed_plan_returns_react(self, sample_plan):
+        sample_plan.status = "completed"
+        state = {"current_plan": sample_plan.model_dump()}
+        assert _should_plan(state) == "react"
+
+    def test_invalid_plan_returns_react(self):
+        state = {"current_plan": {"invalid": True}}
+        assert _should_plan(state) == "react"
+
+
+class TestPlanOrEnd:
+    def test_no_plan_returns_end(self):
+        state = {"current_plan": None}
+        assert _plan_or_end(state) == END
+
+    def test_completed_plan_returns_end(self, sample_plan):
+        sample_plan.status = "completed"
+        state = {"current_plan": sample_plan.model_dump()}
+        assert _plan_or_end(state) == END
+
+    def test_abandoned_plan_returns_end(self, sample_plan):
+        sample_plan.status = "abandoned"
+        state = {"current_plan": sample_plan.model_dump()}
+        assert _plan_or_end(state) == END
+
+    def test_active_plan_with_pending_steps(self, sample_plan):
+        state = {"current_plan": sample_plan.model_dump()}
+        assert _plan_or_end(state) == "step_executor"
+
+    def test_active_plan_all_done(self):
+        plan = Plan(goal="g", steps=[PlanStep(step_id=1, description="s", status="done")])
+        state = {"current_plan": plan.model_dump()}
+        assert _plan_or_end(state) == END
+
+
+class TestAfterStep:
+    def test_tool_calls_returns_agent(self, ai_tool_message):
+        state = {"messages": [ai_tool_message]}
+        assert _after_step(state) == "agent"
+
+    def test_plain_message_returns_reflector(self, ai_plain_message):
+        state = {"messages": [ai_plain_message]}
+        assert _after_step(state) == "reflector"
+
+
+class TestGetAgentPrompt:
+    def test_returns_nonempty_string(self):
+        prompt = SupervisorAgent.get_agent_prompt()
+        assert isinstance(prompt, str)
+        assert len(prompt) > 100
+        assert "ReAct" in prompt
