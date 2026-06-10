@@ -42,6 +42,18 @@ class TestSQLiteMemoryStore:
         results = memory_store.search("不存在的关键词")
         assert results == []
 
+    def test_search_chinese(self, memory_store):
+        """FTS5 默认 tokenizer 不支持 CJK 分词，需降级为 LIKE"""
+        memory_store.save(MemoryRecord(content="测试记忆系统功能：LangCode 的记忆工具", memory_type="fact"))
+        memory_store.save(MemoryRecord(content="Python 是一种编程语言", memory_type="fact"))
+        # 搜索中文词（FTS5 无法分词，必须走 LIKE 降级）
+        results = memory_store.search("记忆系统")
+        assert len(results) == 1
+        assert "记忆系统" in results[0].content
+        # 搜索英文仍正常工作
+        results = memory_store.search("Python")
+        assert len(results) >= 1
+
     def test_search_special_chars_fallback(self, memory_store):
         memory_store.save(MemoryRecord(content="test@#$%", memory_type="fact"))
         results = memory_store.search("@#$")

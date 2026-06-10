@@ -87,8 +87,9 @@ class SQLiteMemoryStore:
         return record.id
 
     def search(self, query: str, top_k: int = 5) -> list[MemoryRecord]:
-        """全文搜索记忆"""
+        """全文搜索记忆。FTS5 不支持 CJK 分词，空结果时自动降级为 LIKE"""
         with self._lock:
+            rows = []
             try:
                 cursor = self._conn.execute(
                     """SELECT m.id, m.content, m.memory_type, m.tags, m.created_at, m.access_count
@@ -101,7 +102,9 @@ class SQLiteMemoryStore:
                 )
                 rows = cursor.fetchall()
             except Exception:
-                log.debug("FTS 搜索失败，退化为 LIKE 搜索")
+                log.debug("FTS 语法错误，降级为 LIKE 搜索")
+
+            if not rows:
                 cursor = self._conn.execute(
                     """SELECT id, content, memory_type, tags, created_at, access_count
                        FROM memories WHERE content LIKE ? LIMIT ?""",
