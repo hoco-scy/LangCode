@@ -46,6 +46,10 @@ AGENT_PROMPT = """你是一个基于 ReAct（Reasoning + Acting）模式的编�
 - `delegate_to_research` — 委派给代码研究员（搜索、分析代码库）
 - `delegate_to_review` — 委派给代码审查员（审查代码质量、安全性）
 
+### MCP 外部工具
+- 通过 MCP (Model Context Protocol) 协议接入的外部工具（如文件系统、GitHub 等）
+- 工具名称格式：`mcp_{服务名}_{工具名}`，如 `mcp_fs_read_file`
+
 ## 行为准则
 - 每次工具调用应有明确目的，避免无意义的重复调用
 - 代码修改前先阅读相关文件，理解上下文
