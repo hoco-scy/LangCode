@@ -1,20 +1,12 @@
 """规划相关工具：供 Agent 调用的计划操作"""
 
-from typing import Optional
+from typing import Optional, Any
 from langchain.tools import tool
 from pydantic import BaseModel, Field
 
 from LangCode.shared.logger import get_logger
 
 log = get_logger("planning.tools")
-
-# 全局引用
-_store = None
-
-
-def init_planning_tools():
-    """初始化规划工具（当前无需额外依赖）"""
-    pass
 
 
 class PlanCreateInput(BaseModel):
@@ -38,8 +30,25 @@ def plan_create(goal: str, steps: list[str]) -> dict:
         return {"success": False, "error": str(e)}
 
 
-@tool("plan_show")
-def plan_show() -> dict:
-    """显示当前正在执行的计划及其进度。"""
-    # 这个工具主要由 graph 节点在 state 中读取，这里返回提示
-    return {"success": True, "message": "请通过 graph state 查看当前计划"}
+class PlanShowInput(BaseModel):
+    current_plan: Optional[dict] = Field(
+        default=None,
+        description="当前计划的完整 dict（从 system message 中的 [当前执行计划] 摘要还原，或传 None 表示无计划）"
+    )
+
+
+@tool("plan_show", args_schema=PlanShowInput)
+def plan_show(current_plan: Optional[dict] = None) -> dict:
+    """显示当前正在执行的计划及其进度。在有活跃计划时调用，以获得结构化的进度视图。"""
+    from LangCode.planning.schema import Plan
+    if current_plan is None:
+        return {"success": True, "message": "当前没有活跃的执行计划。如需为任务创建计划，请使用 plan_create。"}
+    try:
+        plan = Plan(**current_plan)
+        display = plan.to_display()
+        log.info("plan_show: goal=%s status=%s steps=%d",
+                 plan.goal, plan.status, len(plan.steps))
+        return {"success": True, "display": display, "status": plan.status}
+    except Exception as e:
+        log.warning("plan_show: 无法解析计划数据: %s", e)
+        return {"success": False, "error": f"计划数据格式错误: {e}"}

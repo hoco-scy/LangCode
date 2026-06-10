@@ -195,11 +195,6 @@ def _consume_events(graph, events, config):
             break
 
 
-def create_new_session() -> dict:
-    # 本质是创建一个新的config
-    pass
-
-
 if __name__ == "__main__":
     log.info("=== LangCode Agent 启动 ===")
     config = {

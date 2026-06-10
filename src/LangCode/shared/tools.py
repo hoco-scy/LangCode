@@ -96,8 +96,6 @@ class RunPythonInput(BaseModel):
     timeout: int = Field(default=15, ge=1, le=60, description="超时秒数，最长 60 秒")
 
 
-import sys
-import subprocess
 import platform
 import threading
 import psutil
