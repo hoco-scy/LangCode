@@ -118,27 +118,27 @@ def _run_syntax_check(files: list[str]) -> list[str]:
     return errors
 
 
-def _run_import_check(files: list[str]) -> list[str]:
+def _run_import_check(files: list[str], project_root: str = ".") -> list[str]:
     """尝试导入修改的模块，检查导入链是否完整"""
     errors = []
     for fpath in files:
         # 将文件路径转为模块名
         mod_path = fpath.replace("/", ".").replace("\\", ".").replace(".py", "")
-        if mod_path.startswith("src."):
-            mod_path = mod_path[4:]
+        # 去掉可能的 src. 前缀，改用 sys.path 注入
         try:
             result = subprocess.run(
-                [sys.executable, "-c", f"import {mod_path.split('.')[-1]}"],
+                [sys.executable, "-c", f"import sys; sys.path.insert(0, '{project_root}'); __import__('{mod_path}')"],
                 capture_output=True, text=True, timeout=10,
-                cwd=os.path.dirname(fpath) or ".",
             )
             if result.returncode != 0:
                 stderr = result.stderr.strip()
                 if "ModuleNotFoundError" in stderr or "ImportError" in stderr:
                     errors.append(f"[导入] {fpath}: {stderr.splitlines()[-1] if stderr else '导入失败'}")
                     log.warning("import check 失败: %s", fpath)
+        except subprocess.TimeoutExpired:
+            log.debug("import check 超时: %s", fpath)
         except Exception:
-            pass  # 导入检查是尽力而为，不阻塞
+            log.debug("import check 跳过: %s", fpath)
     return errors
 
 
@@ -187,28 +187,24 @@ def _verify_node(state: LCState) -> dict:
 
     if all_errors:
         error_summary = "\n".join(all_errors)
-        return {"messages": [SystemMessage(
-            content=f"[代码验证失败]\n以下问题需要修复：\n{error_summary}\n\n请分析错误并立即修复。"
-        )]}
+        return {
+            "messages": [SystemMessage(
+                content=f"[代码验证失败]\n以下问题需要修复：\n{error_summary}\n\n请分析错误并立即修复。"
+            )],
+            "verify_errors": all_errors,
+        }
 
     log.info("verify: 所有验证通过")
-    return {}
+    return {"verify_errors": None}
 
 
 def _verify_routing(state: LCState) -> Literal["agent", "__end__"]:
-    """验证后路由：如果有错误，回到 agent 修复；否则结束"""
-    last_message = state["messages"][-1]
-    if isinstance(last_message, SystemMessage) and "代码验证失败" in (last_message.content or ""):
+    """验证后路由：如果 state 中有验证错误，回到 agent 修复；否则结束"""
+    if state.get("verify_errors"):
         return "agent"
     return END
 
 
-def _tools_routing(state: LCState) -> Literal["verify", "__end__"]:
-    """工具执行后路由：检查 LLM 是否还要继续调用工具"""
-    last_message = state["messages"][-1]
-    if isinstance(last_message, AIMessage) and last_message.tool_calls:
-        return "verify"
-    return END
 
 
 class CodeAgent(BaseAgent):

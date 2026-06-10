@@ -38,3 +38,4 @@ class LCState(TypedDict):
     task_description: str                  # 当前任务描述
     delegated_to: Optional[str]            # 委托给哪个子 agent
     sub_agent_results: Annotated[list[dict], add]  # 子 agent 返回结果
+    verify_errors: Optional[list[str]]     # CodeAgent 验证节点发现的错误列表
