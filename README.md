@@ -1,58 +1,113 @@
 # LangCode
 
-基于LangGraph构建的code agent项目
+基于 LangGraph 构建的 AI Code Agent，具备完整的生产级能力。
 
-这个仓库随着笔者的学习进度逐渐完善，目标是：融入agent的多种先进技术包括但不限于：
-1. context和memory管理
-2. multi-agent编排
-3. reflection与自我修正
-4. MCP
+## 核心特性
+
+- **Tool Use / Function Calling** — 7 个内置工具，涵盖文件读写、代码执行、Shell 命令、API 请求
+- **Memory 记忆管理** — SQLite + FTS5 全文搜索，零外部依赖的持久化记忆系统
+- **Planning 任务规划** — Plan-and-Execute 模式，LLM 自动分解复杂任务为可执行步骤
+- **Multi-Agent 多 Agent 协作** — Supervisor 编排 Code/Research/Review 三个专业子 Agent
+
+## 项目结构
 
 ```
 LangCode/
-├── src/
-│   ├── main.py                   # 程序入口
+├── src/LangCode/
+│   ├── main.py                          # 程序入口，集成所有子系统
 │   │
-│   ├── agents/                   # agent 实现
-│   │   └── supervisor/           # supervisor agent
-│   │       ├── graph.py          # graph 构建、编译、入口
-│   │       ├── nodes.py          # 节点函数
-│   │       ├── router.py         # 条件边 / 路由函数
-│   │       └── tools.py          # 工具函数
+│   ├── shared/                          # 共享基础设施
+│   │   ├── state.py                     # LCState 全局状态定义
+│   │   ├── llm.py                       # LLM 初始化
+│   │   ├── config.py                    # 可调参数
+│   │   ├── tools.py                     # 7 个共享工具（read/write/edit/search/shell/python/api）
+│   │   ├── command.py                   # 命令常量
+│   │   └── logger.py                    # 日志系统
 │   │
-│   └── shared/                   # 共享模块
-│       ├── config.py             # 可调参数
-│       ├── llm.py                # LLM 初始化
-│       ├── state.py              # State TypedDict 定义
-│       └── tools.py              # 共享工具函数
-
+│   ├── memory/                          # 记忆管理系统
+│   │   ├── store.py                     # SQLiteMemoryStore，FTS5 全文搜索
+│   │   ├── manager.py                   # MemoryManager，自动提取/检索/注入
+│   │   └── tools.py                     # memory_save / search / list 工具
+│   │
+│   ├── planning/                        # 任务规划系统
+│   │   ├── schema.py                    # Plan / PlanStep 模型
+│   │   ├── planner.py                   # LLM 生成执行计划
+│   │   ├── executor.py                  # 逐步执行计划
+│   │   ├── reflector.py                 # 评估结果，决定继续/重规划
+│   │   └── tools.py                     # plan_create / plan_show 工具
+│   │
+│   └── agents/                          # 多 Agent 协作
+│       ├── base.py                      # BaseAgent 抽象基类
+│       ├── delegate_tools.py            # 委托工具，Supervisor 调度子 Agent
+│       ├── supervisor/
+│       │   ├── graph.py                 # ReAct + Plan-and-Execute 双模式编排器
+│       │   └── prompts.py               # 系统提示词
+│       ├── code_agent/graph.py          # 代码生成/编辑/调试
+│       ├── research_agent/graph.py      # 文件搜索/阅读/分析
+│       └── review_agent/graph.py        # 代码审查/安全分析
+│
+└── tests/                               # 测试（122 个）
+    ├── conftest.py                      # 共享 fixtures
+    ├── shared/                          # 工具和提示词测试
+    ├── memory/                          # 记忆系统测试
+    ├── planning/                        # 规划系统测试
+    └── agents/                          # Agent 路由和委托测试
 ```
 
-各文件的职责说明
+## 快速开始
 
-### `src/main.py`
-程序入口，负责初始化环境、组装 agent 并启动运行。
+```bash
+# 安装依赖
+uv sync
 
-### `src/shared/` — 共享模块
-| 文件 | 职责 |
-|------|------|
-| `state.py` | State TypedDict / Pydantic 定义，以及 reducer。所有 nodes、routers 都依赖它 |
-| `llm.py` | LLM 实例化（模型、temperature 等），`bind_tools` 在这里做 |
-| `config.py` | 可调参数，`RunnableConfig` 的 configurable schema（运行时可覆盖的参数） |
-| `tools.py` | 共享工具函数，供多个 agent 复用 |
+# 配置 LLM（默认使用 MiMo-v2.5-pro）
+export LC_MODEL_NAME="your-model"
+export LC_API_KEY="your-api-key"
+export LC_BASE_URL="your-base-url"
 
-### `src/agents/supervisor/` — Supervisor Agent
-| 文件 | 职责 |
-|------|------|
-| `graph.py` | `StateGraph` 构建、`add_node` / `add_edge` / `compile`，agent 的入口 |
-| `nodes.py` | 各个节点函数，接受 state 返回 state 更新（如 LLM 调用节点） |
-| `router.py` | 条件边函数，决定 graph 走哪条路 |
-| `tools.py` | 该 agent 专用的工具函数 |
+# 运行 Agent
+uv run python src/LangCode/main.py
 
-几个关键设计原则
-1. `state.py` 是核心，其他模块都依赖它
-   所有 nodes、routers 都 import State，所以避免 `state.py` 反向 import 其他模块，防止循环依赖。
-2. `llm.py` 独立出来有意义
-   LLM 实例可在多处复用，集中管理模型配置（API key、base_url、temperature）。
-3. `shared/` 与 `agents/` 分离
-   共享模块不依赖任何 agent 实现，agent 可以按需新增目录（如 `agents/researcher/`）。
+# 运行测试
+uv run pytest tests/ -v
+```
+
+## 架构设计
+
+### 双模式编排
+
+Supervisor Agent 支持两种工作模式，根据任务复杂度自动切换：
+
+- **ReAct 模式** — 简单任务直接推理+行动，快速响应
+- **Plan-and-Execute 模式** — 复杂任务先规划再执行，支持反思和重规划
+
+### 记忆系统
+
+基于 SQLite + FTS5，零外部依赖：
+
+- 对话结束时自动提取值得记忆的信息
+- FTS5 全文搜索 + LIKE 模糊匹配双通道检索
+- 记忆注入系统提示词，提供上下文感知
+
+### 多 Agent 协作
+
+Supervisor 通过委托工具调度专业子 Agent：
+
+- `delegate_to_code` — 代码生成、编辑、调试
+- `delegate_to_research` — 文件搜索、阅读、分析
+- `delegate_to_review` — 代码审查、安全分析、质量评估
+
+### 安全沙箱
+
+`run_python` 工具在隔离子进程中执行代码：
+
+- 模块级 import 黑名单（os、subprocess、socket 等）
+- 256MB 内存上限，watchdog 线程实时监控
+- 可配置超时，防止无限循环
+
+## 技术栈
+
+- Python 3.11+
+- LangGraph + LangChain
+- Pydantic（工具 Schema 和数据校验）
+- SQLite + FTS5（记忆存储）
