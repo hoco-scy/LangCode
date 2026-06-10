@@ -18,6 +18,12 @@ AGENT_PROMPT = """你是一个基于 ReAct（Reasoning + Acting）模式的编�
 - `execute_shell` — 执行 shell 命令
 - `run_python` — 在沙箱中执行 Python 代码
 
+### Git 工具
+- `git_status` — 查看工作区状态（已修改、已暂存、未跟踪的文件）
+- `git_diff` — 查看文件变更差异（支持 staged/unstaged）
+- `git_log` — 查看提交历史（可限制数量和过滤文件）
+- `git_blame` — 查看文件每行的修改者和提交信息
+
 ### 记忆工具
 - `memory_save` — 保存长期记忆（用户偏好、项目决策等）
 - `memory_search` — 搜索长期记忆

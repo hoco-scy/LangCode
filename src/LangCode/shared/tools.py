@@ -290,7 +290,141 @@ def search_files(pattern: str, directory: str = ".") -> dict:
         return {"success": False, "error": str(e)}
 
 
-all_tools = [read_file, fetch_api, execute_shell, run_python, write_file, edit_file, search_files]
+# ============================================================
+#  Git 工具
+# ============================================================
+
+class GitStatusInput(BaseModel):
+    path: Optional[str] = Field(default=None, description="限制显示的目录路径，为空则显示整个仓库状态")
+
+
+@tool("git_status", args_schema=GitStatusInput)
+def git_status(path: Optional[str] = None) -> dict:
+    """显示 Git 工作区状态（已修改、已暂存、未跟踪的文件）"""
+    log.info("git_status: path=%s", path)
+    try:
+        cmd = ["git", "status", "--short"]
+        if path:
+            cmd.append(path)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        if result.returncode != 0:
+            return {"success": False, "error": result.stderr.strip() or "不在 Git 仓库中"}
+        output = result.stdout.strip()
+        return {"success": True, "status": output or "工作区干净，无变更"}
+    except FileNotFoundError:
+        return {"success": False, "error": "git 未安装或不在 PATH 中"}
+    except subprocess.TimeoutExpired:
+        return {"success": False, "error": "git status 执行超时"}
+
+
+class GitDiffInput(BaseModel):
+    file_path: Optional[str] = Field(default=None, description="指定文件路径，为空则显示所有变更")
+    staged: bool = Field(default=False, description="True 显示已暂存的变更，False 显示未暂存的变更")
+
+
+@tool("git_diff", args_schema=GitDiffInput)
+def git_diff(file_path: Optional[str] = None, staged: bool = False) -> dict:
+    """显示 Git 文件变更差异。可查看未暂存或已暂存的改动。"""
+    log.info("git_diff: file_path=%s staged=%s", file_path, staged)
+    try:
+        cmd = ["git", "diff"]
+        if staged:
+            cmd.append("--staged")
+        if file_path:
+            cmd.extend(["--", file_path])
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        if result.returncode != 0:
+            return {"success": False, "error": result.stderr.strip()}
+        output = result.stdout.strip()
+        if not output:
+            label = "已暂存" if staged else "未暂存"
+            return {"success": True, "diff": f"无{label}变更", "lines": 0}
+        line_count = output.count("\n") + 1
+        return {"success": True, "diff": output, "lines": line_count}
+    except FileNotFoundError:
+        return {"success": False, "error": "git 未安装或不在 PATH 中"}
+    except subprocess.TimeoutExpired:
+        return {"success": False, "error": "git diff 执行超时"}
+
+
+class GitLogInput(BaseModel):
+    count: int = Field(default=10, ge=1, le=50, description="显示的提交数量")
+    file_path: Optional[str] = Field(default=None, description="限制显示指定文件的提交历史")
+
+
+@tool("git_log", args_schema=GitLogInput)
+def git_log(count: int = 10, file_path: Optional[str] = None) -> dict:
+    """显示 Git 提交历史。可限制数量和过滤特定文件。"""
+    log.info("git_log: count=%d file_path=%s", count, file_path)
+    try:
+        cmd = ["git", "log", f"-{count}", "--oneline", "--no-decorate"]
+        if file_path:
+            cmd.extend(["--", file_path])
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        if result.returncode != 0:
+            return {"success": False, "error": result.stderr.strip()}
+        output = result.stdout.strip()
+        if not output:
+            return {"success": True, "commits": [], "total": 0}
+        commits = []
+        for line in output.split("\n"):
+            parts = line.split(" ", 1)
+            if len(parts) == 2:
+                commits.append({"hash": parts[0], "message": parts[1]})
+            else:
+                commits.append({"hash": parts[0], "message": ""})
+        return {"success": True, "commits": commits, "total": len(commits)}
+    except FileNotFoundError:
+        return {"success": False, "error": "git 未安装或不在 PATH 中"}
+    except subprocess.TimeoutExpired:
+        return {"success": False, "error": "git log 执行超时"}
+
+
+class GitBlameInput(BaseModel):
+    file_path: str = Field(description="要查看 blame 信息的文件路径")
+    start_line: Optional[int] = Field(default=None, ge=1, description="起始行号（从 1 开始）")
+    end_line: Optional[int] = Field(default=None, ge=1, description="结束行号（包含）")
+
+
+@tool("git_blame", args_schema=GitBlameInput)
+def git_blame(file_path: str, start_line: Optional[int] = None, end_line: Optional[int] = None) -> dict:
+    """显示文件每一行的最后修改者和提交信息，用于追溯代码变更历史。"""
+    log.info("git_blame: file_path=%s lines=%s-%s", file_path, start_line, end_line)
+    try:
+        cmd = ["git", "blame", "--porcelain"]
+        if start_line and end_line:
+            cmd.extend(["-L", f"{start_line},{end_line}"])
+        elif start_line:
+            cmd.extend(["-L", f"{start_line},+20"])
+        cmd.append(file_path)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        if result.returncode != 0:
+            return {"success": False, "error": result.stderr.strip()}
+        # 解析 porcelain 格式，提取作者和提交信息
+        authors = {}
+        current_commit = None
+        for line in result.stdout.split("\n"):
+            if line.startswith("author "):
+                authors.setdefault(current_commit, {})["author"] = line[7:]
+            elif line.startswith("summary "):
+                authors.setdefault(current_commit, {})["summary"] = line[8:]
+            elif len(line) >= 40 and line[:40].strip().isalnum():
+                current_commit = line[:40].strip()
+        # 去重，只保留唯一的作者-提交映射
+        unique = {}
+        for info in authors.values():
+            key = f"{info.get('author', '?')}: {info.get('summary', '?')}"
+            unique[key] = unique.get(key, 0) + 1
+        blame_entries = [{"reference": k, "lines": v} for k, v in sorted(unique.items(), key=lambda x: -x[1])]
+        return {"success": True, "file": file_path, "blame": blame_entries[:20]}
+    except FileNotFoundError:
+        return {"success": False, "error": "git 未安装或不在 PATH 中"}
+    except subprocess.TimeoutExpired:
+        return {"success": False, "error": "git blame 执行超时"}
+
+
+all_tools = [read_file, fetch_api, execute_shell, run_python, write_file, edit_file, search_files,
+             git_status, git_diff, git_log, git_blame]
 
 if __name__ == "__main__":
     from langchain_core.utils.function_calling import convert_to_openai_tool
