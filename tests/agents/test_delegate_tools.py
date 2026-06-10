@@ -38,7 +38,7 @@ class TestDelegateToolBehavior:
         result = tool_fn.invoke({"task": "写一个 hello world"})
         assert result["success"] is True
         assert result["agent"] == "code"
-        assert "已完成代码编写" in result["result"]
+        assert "已完成代码编写" in result["summary"]
 
     def test_agent_execution_exception(self):
         mock_agent = MagicMock()

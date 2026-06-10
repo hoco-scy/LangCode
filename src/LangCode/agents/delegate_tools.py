@@ -3,21 +3,10 @@
 from langchain.tools import tool
 from pydantic import BaseModel, Field
 from langchain_core.messages import SystemMessage, HumanMessage
-from langgraph.checkpoint.memory import MemorySaver
 
 from LangCode.shared.logger import get_logger
 
 log = get_logger("agents.delegate")
-
-# 每个子 Agent 的 checkpoint 缓存，避免每次调用都创建新实例
-_sub_checkpoints: dict[str, MemorySaver] = {}
-
-
-def _get_sub_checkpoint(agent_name: str) -> MemorySaver:
-    """获取或创建子 Agent 的 checkpoint（每个 agent 只创建一次）"""
-    if agent_name not in _sub_checkpoints:
-        _sub_checkpoints[agent_name] = MemorySaver()
-    return _sub_checkpoints[agent_name]
 
 
 class DelegateInput(BaseModel):
@@ -39,7 +28,8 @@ def _make_delegate_tool(agent_name: str, agent_desc: str, agents: dict):
 
         try:
             sub_graph = agent.get_graph()
-            sub_config = {"configurable": {"thread_id": f"sub_{agent_name}_{id(task)}"}}
+            # 固定 thread_id 使子 Agent 在多次委派间保持对话记忆
+            sub_config = {"configurable": {"thread_id": f"sub_{agent_name}"}}
 
             # 注入系统提示
             system_prompt = agent.get_system_prompt()
@@ -50,8 +40,11 @@ def _make_delegate_tool(agent_name: str, agent_desc: str, agents: dict):
                 "messages": [SystemMessage(content=system_prompt)]
             })
 
-            # 执行子 Agent
-            result_messages = []
+            # 执行子 Agent，收集所有输出
+            result_parts = []
+            tool_calls_made = 0
+            files_modified = []
+
             events = sub_graph.stream(
                 {"messages": [HumanMessage(content=task)]},
                 sub_config,
@@ -60,21 +53,41 @@ def _make_delegate_tool(agent_name: str, agent_desc: str, agents: dict):
 
             for mode, data in events:
                 if mode == "updates":
+                    # 收集 agent 节点的文本输出
+                    for node_name in ("agent", "synthesize_llm", "report"):
+                        if node_name in data:
+                            node_msg = data[node_name].get("messages")
+                            if node_msg:
+                                msgs = node_msg if isinstance(node_msg, list) else [node_msg]
+                                for msg in msgs:
+                                    if hasattr(msg, 'content') and msg.content:
+                                        result_parts.append(msg.content)
+
+                    # 统计工具调用
                     if "agent" in data:
                         agent_msg = data["agent"].get("messages")
                         if agent_msg:
                             msgs = agent_msg if isinstance(agent_msg, list) else [agent_msg]
                             for msg in msgs:
-                                if hasattr(msg, 'content') and msg.content:
-                                    result_messages.append(msg.content)
+                                for tc in getattr(msg, "tool_calls", []) or []:
+                                    tool_calls_made += 1
+                                    args = tc.get("args", {})
+                                    if tc.get("name") in ("write_file", "edit_file") and "file_path" in args:
+                                        files_modified.append(args["file_path"])
 
-            result = "\n".join(result_messages) if result_messages else "子 Agent 未产生输出"
-            log.info("子 Agent %s 完成: %s", agent_name, result[:200])
-            return {"success": True, "agent": agent_name, "result": result}
+            summary = "\n".join(result_parts) if result_parts else "子 Agent 未产生输出"
+            log.info("子 Agent %s 完成: 工具调用=%d, 输出=%d 字符", agent_name, tool_calls_made, len(summary))
+            return {
+                "success": True,
+                "agent": agent_name,
+                "summary": summary[:3000],  # 截断过长输出，保留 3000 字符
+                "tool_calls": tool_calls_made,
+                "files_modified": list(set(files_modified)),
+            }
 
         except Exception as e:
             log.error("子 Agent %s 执行失败: %s", agent_name, e)
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": str(e), "agent": agent_name}
 
     delegate.__name__ = f"delegate_to_{agent_name}"
     delegate.__doc__ = f"将任务委派给{agent_desc}执行。适用于需要{agent_desc}的场景。"
