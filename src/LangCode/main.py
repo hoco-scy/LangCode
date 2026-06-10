@@ -1,20 +1,20 @@
 """LangCode AI Code Agent 入口
 
 基于 LangGraph 的多 Agent 协作系统，具备记忆、规划、上下文管理等能力。
+
+用法:
+    python main.py           # 命令行对话模式（默认）
+    python main.py --tui     # TUI 终端界面模式
 """
 
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessageChunk
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 
-from LangCode.agents.supervisor.graph import SupervisorAgent
-from LangCode.shared.llm import llm
-from LangCode.shared.tools import all_tools
-from LangCode.shared.ast_tools import ast_tools
-from LangCode.shared.mcp_client import MCPManager
-from LangCode.shared.command import *
+from LangCode.agents.supervisor import SupervisorAgent
+from LangCode.shared import llm, all_tools, ast_tools, MCPManager, get_logger
+from LangCode.shared.command import COMMAND_EXIT, COMMAND_MEMORY
 from LangCode.shared.prompts import get_platform_prompt
-from LangCode.shared.logger import get_logger
 
 # 记忆系统
 from LangCode.memory.store import SQLiteMemoryStore
@@ -202,10 +202,22 @@ def _consume_events(graph, events, config):
 
 
 if __name__ == "__main__":
-    log.info("=== LangCode Agent 启动 ===")
-    lc_graph, config, agent_prompt, platform_prompt, memory_store, memory_manager = create_agent()
-    run_conversation(lc_graph, config,
-                     platform_prompt=platform_prompt,
-                     agent_prompt=agent_prompt,
-                     memory_store=memory_store,
-                     memory_manager=memory_manager)
+    import sys
+
+    if "--tui" in sys.argv: # 暂时处于不可用状态
+        from LangCode.tui import run_tui
+        log.info("=== LangCode Agent 启动 (TUI 模式) ===")
+        lc_graph, config, agent_prompt, platform_prompt, memory_store, memory_manager = create_agent()
+        run_tui(lc_graph, config,
+                platform_prompt=platform_prompt,
+                agent_prompt=agent_prompt,
+                memory_store=memory_store,
+                memory_manager=memory_manager)
+    else:
+        log.info("=== LangCode Agent 启动 ===")
+        lc_graph, config, agent_prompt, platform_prompt, memory_store, memory_manager = create_agent()
+        run_conversation(lc_graph, config,
+                         platform_prompt=platform_prompt,
+                         agent_prompt=agent_prompt,
+                         memory_store=memory_store,
+                         memory_manager=memory_manager)

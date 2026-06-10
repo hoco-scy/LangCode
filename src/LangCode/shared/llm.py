@@ -1,5 +1,5 @@
 from langchain_openai import ChatOpenAI
-from LangCode.shared.config import *
+from LangCode.shared.config import LC_MODEL_NAME, LC_API_KEY, LC_BASE_URL
 from LangCode.shared.logger import get_logger
 
 log = get_logger("llm")

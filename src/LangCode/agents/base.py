@@ -11,7 +11,7 @@
 from abc import ABC, abstractmethod
 from typing import Optional
 
-from langchain_core.messages import AIMessage, ToolMessage, SystemMessage
+from langchain_core.messages import AIMessage, ToolMessage, SystemMessage, BaseMessage
 from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
 from langgraph.constants import START, END
@@ -43,6 +43,14 @@ class BaseAgent(ABC):
         self.bound_llm = llm.bind_tools(tools)
         self.graph = self.build_graph()
 
+    def _inject_context(self, state: LCState) -> list[BaseMessage]:
+        """子类可覆盖此方法，返回要注入到 LLM 上下文的额外消息。
+
+        返回的消息会插入在系统消息区域之后（如有记忆上下文则紧随其后）。
+        默认不注入任何额外消息。
+        """
+        return []
+
     def _call_llm(self, state: LCState) -> dict:
         """调用 LLM，包含上下文管理、记忆注入和重试保护"""
         messages = list(state["messages"])
@@ -61,17 +69,21 @@ class BaseAgent(ABC):
         if self.llm:
             messages = summarize_old_messages(messages, self.llm)
 
-        # 注入记忆上下文
+        # 注入记忆上下文和子类额外消息
         memory_context = state.get("memory_context", "")
+        extra_msgs = self._inject_context(state)
         if memory_context:
+            extra_msgs.insert(0, SystemMessage(
+                id="memory_context",
+                content=f"[已知的相关记忆]\n{memory_context}"
+            ))
+        if extra_msgs:
             insert_idx = 0
             for i, m in enumerate(messages):
                 if isinstance(m, SystemMessage):
                     insert_idx = i + 1
-            messages.insert(insert_idx, SystemMessage(
-                id="memory_context",
-                content=f"[已知的相关记忆]\n{memory_context}"
-            ))
+            for msg in reversed(extra_msgs):
+                messages.insert(insert_idx, msg)
 
         response = self.bound_llm.invoke(messages)
         if response.tool_calls:
