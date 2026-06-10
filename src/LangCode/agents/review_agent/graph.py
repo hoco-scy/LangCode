@@ -1,7 +1,7 @@
 """ReviewAgent：专注于代码审查、安全分析、质量评估
 
-图结构：agent → tools → report → END
-报告节点在审查工具执行后自动生成结构化审查报告
+图结构：agent → tools → agent → ... → report → END
+多轮工具调用后自动进入报告生成阶段，使用不绑定工具的 LLM 防止幻觉 tool_calls。
 """
 
 from typing import Literal
@@ -30,9 +30,10 @@ REVIEW_AGENT_PROMPT = """你是一个专业的代码审查 Agent。
 - 提供改进建议
 
 ## 工作方式
-1. 使用工具读取和分析目标代码
-2. 工具执行后，系统会自动进入报告生成阶段
-3. 报告阶段必须输出结构化的审查报告
+1. 使用工具读取和分析目标代码（至少一轮工具调用）
+2. 可以多轮调用工具，确保审查全面
+3. 当你认为审查信息收集足够时，不调用任何工具，系统会自动进入报告生成阶段
+4. 在报告生成阶段，必须输出结构化的审查报告
 
 ## 可用工具
 - `read_file` — 读取文件内容
@@ -75,26 +76,20 @@ REVIEW_AGENT_PROMPT = """你是一个专业的代码审查 Agent。
 ```
 """
 
+REPORT_PROMPT = """[报告阶段] 审查信息收集完毕。
 
-def _report_node(state: LCState) -> dict:
-    """报告节点：注入报告生成指令，确保输出结构化审查报告"""
-    return {"messages": [SystemMessage(
-        content="[报告阶段] 审查信息收集完毕。请按照系统提示中的报告格式输出结构化审查报告。不要再调用工具，直接输出审查结果。确保包含严重程度统计和每个问题的具体位置。"
-    )]}
+请按照系统提示中的报告格式输出结构化审查报告。不要再调用工具，直接输出审查结果。
+确保包含：总体评价、严重程度统计、每个问题的具体位置和建议、优点、总体改进建议。"""
+
+MIN_REVIEW_ROUNDS = 1  # 至少经过一轮工具调用才能进入报告阶段
 
 
-def _report_llm_node(state: LCState, llm: ChatOpenAI) -> dict:
-    """调用 LLM 生成审查报告"""
-    response = llm.invoke(state["messages"])
+def _report_node(state: LCState, raw_llm: ChatOpenAI) -> dict:
+    """报告节点：注入报告指令并调用不绑定工具的 LLM 生成报告"""
+    messages = list(state["messages"])
+    messages.append(SystemMessage(content=REPORT_PROMPT))
+    response = raw_llm.invoke(messages)
     return {"messages": [response]}
-
-
-def _agent_routing(state: LCState) -> Literal["tools", "report_prompt"]:
-    """Agent 节点后路由：有工具调用则执行工具，否则进入报告生成"""
-    last_message = state["messages"][-1]
-    if isinstance(last_message, AIMessage) and last_message.tool_calls:
-        return "tools"
-    return "report_prompt"
 
 
 class ReviewAgent(BaseAgent):
@@ -107,23 +102,41 @@ class ReviewAgent(BaseAgent):
     def build_graph(self) -> CompiledStateGraph:
         """ReviewAgent 专用图：agent → tools → agent → ... → report → END
 
-        多轮工具调用后自动生成结构化审查报告
+        多轮工具调用后自动生成结构化审查报告。
+        报告阶段使用 raw LLM（不绑定工具），防止 LLM 幻觉调用工具。
         """
         builder = StateGraph(LCState)
         tool_node = ToolNode(tools=self.tools)
 
         builder.add_node("agent", self._call_llm)
         builder.add_node("tools", tool_node)
-        builder.add_node("report_prompt", _report_node)
-        builder.add_node("report_llm", lambda state: _report_llm_node(state, self.bound_llm))
+        builder.add_node("report", lambda state: _report_node(state, self.llm))
 
         builder.add_edge(START, "agent")
-        builder.add_conditional_edges("agent", _agent_routing)
+        builder.add_conditional_edges("agent", self._agent_routing, {
+            "tools": "tools",
+            "report": "report",
+        })
         builder.add_edge("tools", "agent")
-        builder.add_edge("report_prompt", "report_llm")
-        builder.add_edge("report_llm", END)
+        builder.add_edge("report", END)
 
         return builder.compile(checkpointer=self.checkpoint)
+
+    def _agent_routing(self, state: LCState) -> Literal["tools", "report"]:
+        """Agent 节点后路由：至少一轮工具调用后才能进入报告阶段"""
+        last_message = state["messages"][-1]
+        if isinstance(last_message, AIMessage) and last_message.tool_calls:
+            return "tools"
+
+        # 检查是否已经进行过工具调用（至少一轮）
+        tool_count = sum(
+            1 for m in state["messages"]
+            if hasattr(m, "tool_calls") and m.tool_calls
+        )
+        if tool_count >= MIN_REVIEW_ROUNDS:
+            return "report"
+        # 还没有工具调用，不能进入报告阶段，回到 agent
+        return "tools"
 
     def get_system_prompt(self) -> str:
         return REVIEW_AGENT_PROMPT
