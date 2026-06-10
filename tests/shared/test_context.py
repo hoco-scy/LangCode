@@ -21,9 +21,9 @@ class TestEstimateTokens:
         assert 2 <= tokens <= 5
 
     def test_chinese_text(self):
-        # "你好世界" ≈ 4 chars → ~2 tokens
+        # "你好世界" — tiktoken 可能给 4-8 tokens，启发式回退给 ~2
         tokens = estimate_tokens("你好世界")
-        assert 1 <= tokens <= 4
+        assert 1 <= tokens <= 10
 
     def test_mixed_text(self):
         tokens = estimate_tokens("Hello 你好 world 世界")

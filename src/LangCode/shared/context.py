@@ -1,6 +1,7 @@
 """上下文窗口管理：Token 计数 + 消息裁剪 + 对话摘要
 
 解决长对话撑爆 LLM 上下文窗口的问题。
+优先使用 tiktoken 精确计数，不可用时回退到启发式估算。
 """
 
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, BaseMessage
@@ -15,24 +16,37 @@ KEEP_RECENT = 10
 # 摘要触发阈值：超过 max_tokens 的比例时触发摘要
 SUMMARY_THRESHOLD = 0.85
 
+# 尝试加载 tiktoken 进行精确 token 计数
+try:
+    import tiktoken
+    _tiktoken_enc = tiktoken.get_encoding("cl100k_base")
+    log.debug("tiktoken 已加载 (cl100k_base)")
+except Exception:
+    _tiktoken_enc = None
+    log.debug("tiktoken 不可用，使用启发式估算")
+
 
 def estimate_tokens(text: str) -> int:
     """估算文本的 token 数量
 
-    使用简单的字符比例估算：
+    优先使用 tiktoken 精确计数，回退到启发式估算：
     - 英文：约 1 token / 4 字符
     - 中文：约 1 token / 2 字符
-    - 混合文本取中间值
     """
     if not text:
         return 0
-    # 计算中文字符比例
-    cjk_chars = sum(1 for c in text if '一' <= c <= '鿿')
+    if _tiktoken_enc is not None:
+        try:
+            return len(_tiktoken_enc.encode(text))
+        except Exception:
+            pass
+
+    # 启发式回退
+    cjk_chars = sum(1 for c in text if '一' <= c <= '鿿' or '㐀' <= c <= '䶿')
     total_chars = len(text)
     if total_chars == 0:
         return 0
     cjk_ratio = cjk_chars / total_chars
-    # 中文 token 率约 0.5，英文约 0.25，按比例混合
     chars_per_token = 2 * cjk_ratio + 4 * (1 - cjk_ratio)
     return max(1, int(total_chars / chars_per_token))
 
