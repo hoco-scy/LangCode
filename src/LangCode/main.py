@@ -7,6 +7,7 @@ from langgraph.types import Command
 from LangCode.agents.supervisor.graph import SupervisorAgent
 from LangCode.shared.llm import llm
 from LangCode.shared.tools import all_tools
+from LangCode.shared.ast_tools import ast_tools
 from LangCode.shared.command import *
 from LangCode.shared.prompts import get_platform_prompt
 from LangCode.shared.logger import get_logger
@@ -45,8 +46,8 @@ sub_agents = {
 # 委托工具（工厂模式，通过参数注入 agents，无全局变量）
 delegate_tools = create_delegate_tools(sub_agents)
 
-# 合并所有工具（原有 + 记忆 + 规划 + 委托）
-all_tools_full = all_tools + [memory_save, memory_search, memory_list, plan_create, plan_show] + delegate_tools
+# 合并所有工具（原有 + AST + 记忆 + 规划 + 委托）
+all_tools_full = all_tools + ast_tools + [memory_save, memory_search, memory_list, plan_create, plan_show] + delegate_tools
 
 
 def deal_command(graph, config: dict, user_input: str) -> bool:
