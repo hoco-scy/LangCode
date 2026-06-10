@@ -27,7 +27,7 @@ import asyncio
 from typing import Optional, Any
 
 from langchain.tools import tool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, create_model
 
 from LangCode.shared.logger import get_logger
 
@@ -165,18 +165,28 @@ class MCPServerConnection:
 
 
 def _run_async(coro):
-    """在同步上下文中运行异步代码"""
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            # 如果已有事件循环在运行（如 Jupyter），使用 nest_asyncio
-            import nest_asyncio
-            nest_asyncio.apply()
-            return loop.run_until_complete(coro)
-        else:
-            return loop.run_until_complete(coro)
-    except RuntimeError:
-        return asyncio.run(coro)
+    """在新线程中运行 async 协程，避免污染主事件循环
+
+    不使用 nest_asyncio（全局猴子补丁有副作用）。
+    在独立线程中创建新的事件循环来运行 async 代码。
+    """
+    import threading
+    result = None
+    error = None
+
+    def _runner():
+        nonlocal result, error
+        try:
+            result = asyncio.run(coro)
+        except Exception as e:
+            error = e
+
+    t = threading.Thread(target=_runner, daemon=True)
+    t.start()
+    t.join()
+    if error:
+        raise error
+    return result
 
 
 class MCPManager:
@@ -260,12 +270,9 @@ class MCPManager:
             else:
                 fields[prop_name] = (Optional[py_type], Field(default=None, description=desc))
 
-        # 动态创建 Pydantic 输入模型
+        # 使用 pydantic.create_model 动态创建输入模型
         if fields:
-            InputModel = type(f"{tool_name}_input", (BaseModel,), {
-                '__annotations__': {k: v[0] for k, v in fields.items()},
-                **{k: v[1] for k, v in fields.items()},
-            })
+            InputModel = create_model(f"{tool_name}_input", **fields)
         else:
             InputModel = BaseModel
 
