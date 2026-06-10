@@ -34,7 +34,7 @@ log = get_logger("main")
 
 
 def create_agent():
-    """创建完整的 Agent 及其所有子系统。返回 (graph, config, agent_prompt, platform_prompt)"""
+    """创建完整的 Agent 及其所有子系统。返回 (graph, config, agent_prompt, platform_prompt, memory_store, memory_manager, mcp_manager)"""
     # 记忆系统
     memory_store = SQLiteMemoryStore(db_path=".langcode/memory.db")
     memory_manager = MemoryManager(store=memory_store, llm=llm)
@@ -79,7 +79,7 @@ def create_agent():
     config = {"configurable": {"thread_id": "test_001"}}
     platform_prompt = get_platform_prompt()
 
-    return lc_graph, config, lc_agent_prompt, platform_prompt, memory_store, memory_manager
+    return lc_graph, config, lc_agent_prompt, platform_prompt, memory_store, memory_manager, mcp_manager
 
 
 def deal_command(graph, config: dict, user_input: str, memory_store) -> bool:
@@ -121,13 +121,6 @@ def run_conversation(graph, config, platform_prompt=None, agent_prompt=None,
         user_input = input("\n>: ").strip()
         if user_input.lower() == COMMAND_EXIT:
             log.info("用户退出对话")
-            if memory_manager:
-                current_state = graph.get_state(config)
-                messages = current_state.values.get("messages", [])
-                if messages:
-                    saved = memory_manager.auto_save(messages)
-                    if saved:
-                        print(f"已自动保存 {len(saved)} 条记忆。")
             print("对话结束。")
             break
 
@@ -207,11 +200,13 @@ def _consume_events(graph, events, config):
 
 if __name__ == "__main__":
     import sys
+    import atexit
 
     if "--tui" in sys.argv: # 暂时处于不可用状态
         from LangCode.tui import run_tui
         log.info("=== LangCode Agent 启动 (TUI 模式) ===")
-        lc_graph, config, agent_prompt, platform_prompt, memory_store, memory_manager = create_agent()
+        lc_graph, config, agent_prompt, platform_prompt, memory_store, memory_manager, mcp_manager = create_agent()
+        atexit.register(mcp_manager.disconnect_all)
         run_tui(lc_graph, config,
                 platform_prompt=platform_prompt,
                 agent_prompt=agent_prompt,
@@ -219,7 +214,8 @@ if __name__ == "__main__":
                 memory_manager=memory_manager)
     else:
         log.info("=== LangCode Agent 启动 ===")
-        lc_graph, config, agent_prompt, platform_prompt, memory_store, memory_manager = create_agent()
+        lc_graph, config, agent_prompt, platform_prompt, memory_store, memory_manager, mcp_manager = create_agent()
+        atexit.register(mcp_manager.disconnect_all)
         run_conversation(lc_graph, config,
                          platform_prompt=platform_prompt,
                          agent_prompt=agent_prompt,
