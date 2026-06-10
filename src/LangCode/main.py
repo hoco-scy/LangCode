@@ -11,14 +11,56 @@ from LangCode.shared.command import *
 from LangCode.shared.prompts import get_platform_prompt
 from LangCode.shared.logger import get_logger
 
+# 记忆系统
+from LangCode.memory.store import SQLiteMemoryStore
+from LangCode.memory.manager import MemoryManager
+from LangCode.memory.tools import init_memory_tools, memory_save, memory_search, memory_list
+
+# 规划系统
+from LangCode.planning.tools import plan_create, plan_show
+
+# 多Agent系统
+from LangCode.agents.code_agent import CodeAgent
+from LangCode.agents.research_agent import ResearchAgent
+from LangCode.agents.review_agent import ReviewAgent
+from LangCode.agents.delegate_tools import init_delegate_tools, create_delegate_tools
+
 log = get_logger("main")
 
+# 初始化记忆系统
+memory_store = SQLiteMemoryStore(db_path=".langcode/memory.db")
+memory_manager = MemoryManager(store=memory_store, llm=llm)
+init_memory_tools(memory_store, memory_manager)
 
-# 当前仅有一个智能体，后续可能会继续完善
+# 初始化子 Agent
+lc_checkpoint_sub = MemorySaver()
+research_tools = [t for t in all_tools if t.name in ("read_file", "search_files", "fetch_api")] + [memory_search]
+review_tools = [t for t in all_tools if t.name in ("read_file", "search_files", "run_python", "execute_shell")]
+sub_agents = {
+    "code": CodeAgent(llm=llm, checkpoint=lc_checkpoint_sub, tools=all_tools),
+    "research": ResearchAgent(llm=llm, checkpoint=lc_checkpoint_sub, tools=research_tools),
+    "review": ReviewAgent(llm=llm, checkpoint=lc_checkpoint_sub, tools=review_tools),
+}
+init_delegate_tools(sub_agents)
+delegate_tools = create_delegate_tools()
+
+# 合并所有工具（原有 + 记忆 + 规划 + 委托）
+all_tools_full = all_tools + [memory_save, memory_search, memory_list, plan_create, plan_show] + delegate_tools
 
 
-def deal_command(graph, config: dict) -> dict:
-    pass
+def deal_command(graph, config: dict, user_input: str) -> bool:
+    """处理命令，返回 True 表示已处理"""
+    if user_input == COMMAND_MEMORY:
+        records = memory_store.list_all()
+        if not records:
+            print("暂无长期记忆。")
+        else:
+            print(f"共 {memory_store.count()} 条记忆：")
+            for r in records:
+                tags = f" [{', '.join(r.tags)}]" if r.tags else ""
+                print(f"  [{r.memory_type}]{tags} {r.content[:80]}")
+        return True
+    return False
 
 
 def run_conversation(
@@ -59,8 +101,31 @@ def run_conversation(
         user_input = input("\n>: ").strip()
         if user_input.lower() == COMMAND_EXIT:
             log.info("用户退出对话")
+            # 退出前自动提取记忆
+            current_state = graph.get_state(config)
+            messages = current_state.values.get("messages", [])
+            if messages and memory_manager:
+                saved = memory_manager.auto_save(messages)
+                if saved:
+                    print(f"已自动保存 {len(saved)} 条记忆。")
             print("对话结束。")
             break
+
+        # 处理命令
+        if user_input.startswith("/"):
+            if deal_command(graph, config, user_input):
+                continue
+
+        # 检索相关记忆并注入
+        memory_context = ""
+        if memory_manager:
+            memory_context = memory_manager.get_context(user_input)
+            if memory_context:
+                log.debug("注入记忆上下文: %d 字符", len(memory_context))
+
+        # 将记忆上下文写入 state
+        if memory_context:
+            graph.update_state(config, {"memory_context": memory_context})
 
         log.info("用户输入: %s", user_input[:200])
         events = graph.stream(
@@ -144,7 +209,7 @@ if __name__ == "__main__":
 
     lc_checkpoint = MemorySaver()
 
-    lc_agent = SupervisorAgent(llm=llm, sys_checkpoint=lc_checkpoint, sys_tools=all_tools)
+    lc_agent = SupervisorAgent(llm=llm, sys_checkpoint=lc_checkpoint, sys_tools=all_tools_full)
     lc_graph = lc_agent.get_graph()
     lc_agent_prompt = lc_agent.get_agent_prompt()
 
