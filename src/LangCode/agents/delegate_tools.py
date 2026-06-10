@@ -17,7 +17,10 @@ class DelegateInput(BaseModel):
 def _make_delegate_tool(agent_name: str, agent_desc: str, agents: dict):
     """动态创建委托工具，通过参数注入 agents 而非全局变量"""
 
-    @tool(f"delegate_to_{agent_name}", args_schema=DelegateInput, return_direct=True)
+    tool_name = f"delegate_to_{agent_name}"
+    tool_description = f"将任务委派给{agent_desc}执行。适用于需要{agent_desc}的场景。"
+
+    @tool(tool_name, args_schema=DelegateInput, return_direct=True, description=tool_description)
     def delegate(task: str, context: str = "") -> dict:
         """将任务委派给指定的专业 Agent 执行。用于需要专业能力的复杂任务。"""
         if agent_name not in agents:
@@ -89,8 +92,6 @@ def _make_delegate_tool(agent_name: str, agent_desc: str, agents: dict):
             log.error("子 Agent %s 执行失败: %s", agent_name, e)
             return {"success": False, "error": str(e), "agent": agent_name}
 
-    delegate.__name__ = f"delegate_to_{agent_name}"
-    delegate.__doc__ = f"将任务委派给{agent_desc}执行。适用于需要{agent_desc}的场景。"
     return delegate
 
 

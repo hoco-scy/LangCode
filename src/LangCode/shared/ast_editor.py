@@ -11,13 +11,17 @@
 """
 
 import os
-from dataclasses import dataclass, field
 from typing import Optional
 
 import tree_sitter_python as tspython
 from tree_sitter import Language, Parser, Node
 
 from LangCode.shared.logger import get_logger
+from LangCode.shared.schemas import (
+    AstInfoResponse, AstFunctionInfo, AstClassInfo,
+    AstFindResponse, AstFindResult,
+    AstEditResponse,
+)
 
 log = get_logger("ast_editor")
 
@@ -26,35 +30,6 @@ _parser = Parser(Language(tspython.language()))
 
 # 支持的文件扩展名
 SUPPORTED_EXTENSIONS = {".py"}
-
-
-@dataclass
-class ASTNode:
-    """AST 节点信息"""
-    type: str          # 节点类型：function_definition, class_definition, identifier 等
-    name: str          # 节点名称（如果有）
-    start_line: int    # 起始行（1-based）
-    end_line: int      # 结束行（1-based）
-    start_col: int     # 起始列（0-based）
-    text: str          # 节点文本（截断）
-
-
-@dataclass
-class EditResult:
-    """编辑结果"""
-    success: bool
-    message: str = ""
-    file_path: str = ""
-    changes: list[str] = field(default_factory=list)
-    error: Optional[str] = None
-
-    def to_dict(self) -> dict:
-        return {
-            "success": self.success,
-            "message": self.message,
-            "changes": self.changes,
-            "error": self.error,
-        }
 
 
 def _parse_file(file_path: str) -> tuple[bytes, Node]:
@@ -141,17 +116,17 @@ def _write_file(file_path: str, source: bytes):
 #  公开 API
 # ============================================================
 
-def ast_info(file_path: str) -> dict:
+def ast_info(file_path: str) -> AstInfoResponse:
     """分析文件的 AST 结构，返回函数、类、import 等信息"""
     if not os.path.isfile(file_path):
-        return {"success": False, "error": f"文件不存在: {file_path}"}
+        return AstInfoResponse(success=False, error=f"文件不存在: {file_path}")
     if not any(file_path.endswith(ext) for ext in SUPPORTED_EXTENSIONS):
-        return {"success": False, "error": f"不支持的文件类型，仅支持: {SUPPORTED_EXTENSIONS}"}
+        return AstInfoResponse(success=False, error=f"不支持的文件类型，仅支持: {SUPPORTED_EXTENSIONS}")
 
     try:
         source_bytes, root = _parse_file(file_path)
     except Exception as e:
-        return {"success": False, "error": f"解析失败: {e}"}
+        return AstInfoResponse(success=False, error=f"解析失败: {e}")
 
     functions = []
     classes = []
@@ -163,11 +138,7 @@ def ast_info(file_path: str) -> dict:
             name = name_node.text.decode() if name_node else "?"
             params = _get_function_params(child)
             param_names = [p.text.decode().split(":")[0].split("=")[0].strip() for p in params]
-            functions.append({
-                "name": name,
-                "line": child.start_point[0] + 1,
-                "params": param_names,
-            })
+            functions.append(AstFunctionInfo(name=name, line=child.start_point[0] + 1, params=param_names))
         elif child.type == "class_definition":
             name_node = child.child_by_field_name("name")
             name = name_node.text.decode() if name_node else "?"
@@ -177,25 +148,21 @@ def ast_info(file_path: str) -> dict:
                 for method_node in _find_nodes(body, "function_definition"):
                     mname = method_node.child_by_field_name("name")
                     methods.append(mname.text.decode() if mname else "?")
-            classes.append({
-                "name": name,
-                "line": child.start_point[0] + 1,
-                "methods": methods,
-            })
+            classes.append(AstClassInfo(name=name, line=child.start_point[0] + 1, methods=methods))
         elif child.type in ("import_statement", "import_from_statement"):
             imports.append(child.text.decode().strip())
 
-    return {
-        "success": True,
-        "file": file_path,
-        "functions": functions,
-        "classes": classes,
-        "imports": imports,
-        "total_lines": source_bytes.count(b"\n") + 1,
-    }
+    return AstInfoResponse(
+        success=True,
+        file=file_path,
+        functions=functions,
+        classes=classes,
+        imports=imports,
+        total_lines=source_bytes.count(b"\n") + 1,
+    )
 
 
-def ast_find(file_path: str, target_type: str, name: str) -> dict:
+def ast_find(file_path: str, target_type: str, name: str) -> AstFindResponse:
     """查找指定的 AST 节点
 
     Args:
@@ -204,12 +171,12 @@ def ast_find(file_path: str, target_type: str, name: str) -> dict:
         name: 要查找的名称
     """
     if not os.path.isfile(file_path):
-        return {"success": False, "error": f"文件不存在: {file_path}"}
+        return AstFindResponse(success=False, error=f"文件不存在: {file_path}")
 
     try:
         source_bytes, root = _parse_file(file_path)
     except Exception as e:
-        return {"success": False, "error": f"解析失败: {e}"}
+        return AstFindResponse(success=False, error=f"解析失败: {e}")
 
     node_type_map = {
         "function": "function_definition",
@@ -220,53 +187,47 @@ def ast_find(file_path: str, target_type: str, name: str) -> dict:
     if target_type in node_type_map:
         nodes = _find_nodes(root, node_type_map[target_type], name)
         for node in nodes:
-            results.append({
-                "name": name,
-                "type": target_type,
-                "line": node.start_point[0] + 1,
-                "end_line": node.end_point[0] + 1,
-                "text_preview": node.text.decode()[:300],
-            })
+            results.append(AstFindResult(
+                name=name, type=target_type,
+                line=node.start_point[0] + 1,
+                end_line=node.end_point[0] + 1,
+                text_preview=node.text.decode()[:300],
+            ))
     elif target_type == "method":
-        # 在所有类中查找方法
         for class_node in _find_nodes(root, "class_definition"):
             body = class_node.child_by_field_name("body")
             if body:
                 for method_node in _find_nodes(body, "function_definition", name):
                     class_name_node = class_node.child_by_field_name("name")
-                    results.append({
-                        "name": name,
-                        "type": "method",
-                        "class": class_name_node.text.decode() if class_name_node else "?",
-                        "line": method_node.start_point[0] + 1,
-                        "end_line": method_node.end_point[0] + 1,
-                        "text_preview": method_node.text.decode()[:300],
-                    })
+                    results.append(AstFindResult(
+                        name=name, type="method",
+                        class_name=class_name_node.text.decode() if class_name_node else "?",
+                        line=method_node.start_point[0] + 1,
+                        end_line=method_node.end_point[0] + 1,
+                        text_preview=method_node.text.decode()[:300],
+                    ))
     elif target_type == "variable":
-        # 查找赋值语句中的变量
         for assign_node in _find_assignments(root):
             left = assign_node.child_by_field_name("left")
             if left and left.type == "identifier" and left.text.decode() == name:
-                # 获取包含此赋值的顶层语句（可能是 expression_statement）
                 parent = assign_node.parent
                 display_node = parent if parent and parent.type == "expression_statement" else assign_node
-                results.append({
-                    "name": name,
-                    "type": "variable",
-                    "line": display_node.start_point[0] + 1,
-                    "text_preview": display_node.text.decode()[:200],
-                })
+                results.append(AstFindResult(
+                    name=name, type="variable",
+                    line=display_node.start_point[0] + 1,
+                    text_preview=display_node.text.decode()[:200],
+                ))
 
-    return {
-        "success": True,
-        "file": file_path,
-        "query": f"{target_type} '{name}'",
-        "found": len(results),
-        "results": results,
-    }
+    return AstFindResponse(
+        success=True,
+        file=file_path,
+        query=f"{target_type} '{name}'",
+        found=len(results),
+        results=results,
+    )
 
 
-def ast_rename(file_path: str, old_name: str, new_name: str, scope: str = "all") -> EditResult:
+def ast_rename(file_path: str, old_name: str, new_name: str, scope: str = "all") -> AstEditResponse:
     """重命名标识符（函数名、类名、变量名、参数名）
 
     Args:
@@ -276,26 +237,26 @@ def ast_rename(file_path: str, old_name: str, new_name: str, scope: str = "all")
         scope: 范围 - "all"(整个文件) 或 "function:func_name"(指定函数内)
     """
     if not os.path.isfile(file_path):
-        return EditResult(success=False, error=f"文件不存在: {file_path}")
+        return AstEditResponse(success=False, error=f"文件不存在: {file_path}")
 
     try:
         source_bytes, root = _parse_file(file_path)
     except Exception as e:
-        return EditResult(success=False, error=f"解析失败: {e}")
+        return AstEditResponse(success=False, error=f"解析失败: {e}")
 
     # 确定搜索范围
     if scope.startswith("function:"):
         func_name = scope.split(":", 1)[1]
         func_nodes = _find_nodes(root, "function_definition", func_name)
         if not func_nodes:
-            return EditResult(success=False, error=f"未找到函数 '{func_name}'")
+            return AstEditResponse(success=False, error=f"未找到函数 '{func_name}'")
         search_root = func_nodes[0]
     else:
         search_root = root
 
     identifiers = _find_all_identifiers(search_root, old_name)
     if not identifiers:
-        return EditResult(success=False, error=f"未找到标识符 '{old_name}'")
+        return AstEditResponse(success=False, error=f"未找到标识符 '{old_name}'")
 
     # 同时重命名定义节点（function_definition 的 name 字段等）
     definition_nodes = []
@@ -325,16 +286,15 @@ def ast_rename(file_path: str, old_name: str, new_name: str, scope: str = "all")
 
     _write_file(file_path, new_source)
     log.info("ast_rename: %s -> %s (%d 处修改)", old_name, new_name, len(unique_nodes))
-    return EditResult(
+    return AstEditResponse(
         success=True,
         message=f"已将 '{old_name}' 重命名为 '{new_name}'",
-        file_path=file_path,
         changes=[f"行 {n.start_point[0]+1}: {old_name} -> {new_name}" for n in unique_nodes],
     )
 
 
 def ast_add_param(file_path: str, func_name: str, param_name: str,
-                  default_value: Optional[str] = None, position: int = -1) -> EditResult:
+                  default_value: Optional[str] = None, position: int = -1) -> AstEditResponse:
     """为函数添加参数
 
     Args:
@@ -345,21 +305,21 @@ def ast_add_param(file_path: str, func_name: str, param_name: str,
         position: 插入位置（-1 表示追加到末尾，0 表示插入到 self 后面）
     """
     if not os.path.isfile(file_path):
-        return EditResult(success=False, error=f"文件不存在: {file_path}")
+        return AstEditResponse(success=False, error=f"文件不存在: {file_path}")
 
     try:
         source_bytes, root = _parse_file(file_path)
     except Exception as e:
-        return EditResult(success=False, error=f"解析失败: {e}")
+        return AstEditResponse(success=False, error=f"解析失败: {e}")
 
     func_nodes = _find_nodes(root, "function_definition", func_name)
     if not func_nodes:
-        return EditResult(success=False, error=f"未找到函数 '{func_name}'")
+        return AstEditResponse(success=False, error=f"未找到函数 '{func_name}'")
 
     func_node = func_nodes[0]
     params_node = func_node.child_by_field_name("parameters")
     if not params_node:
-        return EditResult(success=False, error=f"函数 '{func_name}' 没有参数列表")
+        return AstEditResponse(success=False, error=f"函数 '{func_name}' 没有参数列表")
 
     # 构造新参数文本
     param_text = param_name
@@ -369,7 +329,7 @@ def ast_add_param(file_path: str, func_name: str, param_name: str,
     # 获取当前参数列表
     current_params = _get_function_params(func_node)
     if any(p.text.decode().split("=")[0].strip().split(":")[0].strip() == param_name for p in current_params):
-        return EditResult(success=False, error=f"参数 '{param_name}' 已存在")
+        return AstEditResponse(success=False, error=f"参数 '{param_name}' 已存在")
 
     # 构造新的参数列表文本
     param_texts = [p.text.decode() for p in current_params]
@@ -385,16 +345,15 @@ def ast_add_param(file_path: str, func_name: str, param_name: str,
     _write_file(file_path, new_source)
 
     log.info("ast_add_param: %s(%s) 添加参数 %s", file_path, func_name, param_name)
-    return EditResult(
+    return AstEditResponse(
         success=True,
         message=f"已为函数 '{func_name}' 添加参数 '{param_name}'",
-        file_path=file_path,
         changes=[f"函数 {func_name} 参数列表: 添加 {param_text}"],
     )
 
 
 def ast_add_method(file_path: str, class_name: str, method_code: str,
-                   position: int = -1) -> EditResult:
+                   position: int = -1) -> AstEditResponse:
     """在类中添加方法
 
     Args:
@@ -404,21 +363,21 @@ def ast_add_method(file_path: str, class_name: str, method_code: str,
         position: 插入位置（-1 追加到末尾，0 插入到开头）
     """
     if not os.path.isfile(file_path):
-        return EditResult(success=False, error=f"文件不存在: {file_path}")
+        return AstEditResponse(success=False, error=f"文件不存在: {file_path}")
 
     try:
         source_bytes, root = _parse_file(file_path)
     except Exception as e:
-        return EditResult(success=False, error=f"解析失败: {e}")
+        return AstEditResponse(success=False, error=f"解析失败: {e}")
 
     class_nodes = _find_nodes(root, "class_definition", class_name)
     if not class_nodes:
-        return EditResult(success=False, error=f"未找到类 '{class_name}'")
+        return AstEditResponse(success=False, error=f"未找到类 '{class_name}'")
 
     class_node = class_nodes[0]
     body = class_node.child_by_field_name("body")
     if not body:
-        return EditResult(success=False, error=f"类 '{class_name}' 没有方法体")
+        return AstEditResponse(success=False, error=f"类 '{class_name}' 没有方法体")
 
     # 计算缩进（类体的缩进 + 4 空格）
     class_indent = class_node.start_point[1]
@@ -440,15 +399,14 @@ def ast_add_method(file_path: str, class_name: str, method_code: str,
 
     _write_file(file_path, new_source)
     log.info("ast_add_method: %s.%s 添加方法", class_name, method_code[:50])
-    return EditResult(
+    return AstEditResponse(
         success=True,
         message=f"已为类 '{class_name}' 添加方法",
-        file_path=file_path,
         changes=[f"类 {class_name} 行 {insert_line}: 添加方法"],
     )
 
 
-def ast_add_import(file_path: str, import_statement: str) -> EditResult:
+def ast_add_import(file_path: str, import_statement: str) -> AstEditResponse:
     """在文件顶部添加 import 语句（放在现有 import 之后）
 
     Args:
@@ -456,18 +414,18 @@ def ast_add_import(file_path: str, import_statement: str) -> EditResult:
         import_statement: import 语句，如 "from os.path import join"
     """
     if not os.path.isfile(file_path):
-        return EditResult(success=False, error=f"文件不存在: {file_path}")
+        return AstEditResponse(success=False, error=f"文件不存在: {file_path}")
 
     try:
         source_bytes, root = _parse_file(file_path)
     except Exception as e:
-        return EditResult(success=False, error=f"解析失败: {e}")
+        return AstEditResponse(success=False, error=f"解析失败: {e}")
 
     # 检查是否已存在
     for child in root.children:
         if child.type in ("import_statement", "import_from_statement"):
             if child.text.decode().strip() == import_statement.strip():
-                return EditResult(success=False, error=f"import 已存在: {import_statement}")
+                return AstEditResponse(success=False, error=f"import 已存在: {import_statement}")
 
     # 找到最后一个 import 语句的位置
     last_import_line = 0
@@ -492,9 +450,8 @@ def ast_add_import(file_path: str, import_statement: str) -> EditResult:
 
     _write_file(file_path, new_source)
     log.info("ast_add_import: %s 添加 %s", file_path, import_statement)
-    return EditResult(
+    return AstEditResponse(
         success=True,
         message=f"已添加 import: {import_statement}",
-        file_path=file_path,
         changes=[f"行 {insert_line}: {import_statement}"],
     )

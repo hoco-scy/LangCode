@@ -96,3 +96,54 @@ class FetchAPIResponse(ToolResponse):
     """API 请求响应"""
     content: Optional[str] = Field(default=None, description="响应体内容")
     status_code: Optional[int] = Field(default=None, description="HTTP 状态码")
+
+
+# ============================================================
+#  AST 工具响应模型
+# ============================================================
+
+class AstFunctionInfo(BaseModel):
+    """函数信息"""
+    name: str = Field(description="函数名")
+    line: int = Field(description="起始行号")
+    params: list[str] = Field(default_factory=list, description="参数名列表")
+
+
+class AstClassInfo(BaseModel):
+    """类信息"""
+    name: str = Field(description="类名")
+    line: int = Field(description="起始行号")
+    methods: list[str] = Field(default_factory=list, description="方法名列表")
+
+
+class AstInfoResponse(ToolResponse):
+    """AST 结构分析响应"""
+    file: Optional[str] = Field(default=None, description="文件路径")
+    functions: list[AstFunctionInfo] = Field(default_factory=list, description="函数列表")
+    classes: list[AstClassInfo] = Field(default_factory=list, description="类列表")
+    imports: list[str] = Field(default_factory=list, description="import 语句列表")
+    total_lines: Optional[int] = Field(default=None, description="文件总行数")
+
+
+class AstFindResult(BaseModel):
+    """AST 查找结果条目"""
+    name: str = Field(description="名称")
+    type: str = Field(description="类型: function/class/method/variable")
+    line: int = Field(description="起始行号")
+    end_line: Optional[int] = Field(default=None, description="结束行号")
+    class_name: Optional[str] = Field(default=None, description="所属类名（仅 method 类型）")
+    text_preview: Optional[str] = Field(default=None, description="代码预览")
+
+
+class AstFindResponse(ToolResponse):
+    """AST 查找响应"""
+    file: Optional[str] = Field(default=None, description="文件路径")
+    query: Optional[str] = Field(default=None, description="查询描述")
+    found: int = Field(default=0, description="找到的数量")
+    results: list[AstFindResult] = Field(default_factory=list, description="结果列表")
+
+
+class AstEditResponse(ToolResponse):
+    """AST 编辑操作响应（重命名、添加参数、添加方法、添加 import）"""
+    message: Optional[str] = Field(default=None, description="操作结果描述")
+    changes: list[str] = Field(default_factory=list, description="变更详情列表")

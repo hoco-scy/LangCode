@@ -42,8 +42,12 @@ def create_agent():
 
     # 子 Agent
     lc_checkpoint_sub = MemorySaver()
-    research_tools = [t for t in all_tools if t.name in ("read_file", "search_files", "fetch_api")] + [memory_search]
-    review_tools = [t for t in all_tools if t.name in ("read_file", "search_files", "run_python", "execute_shell")]
+    research_tools = [t for t in all_tools if t.name in (
+        "read_file", "search_files", "fetch_api", "git_log", "git_blame"
+    )] + [memory_search]
+    review_tools = [t for t in all_tools if t.name in (
+        "read_file", "search_files", "run_python", "execute_shell", "git_log", "git_blame"
+    )]
     sub_agents = {
         "code": CodeAgent(llm=llm, checkpoint=lc_checkpoint_sub, tools=all_tools),
         "research": ResearchAgent(llm=llm, checkpoint=lc_checkpoint_sub, tools=research_tools),

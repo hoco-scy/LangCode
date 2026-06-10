@@ -25,18 +25,33 @@ log = get_logger("tools")
 
 class ReadFileInput(BaseModel):
     file_path: str = Field(description="The path to the file to read")
+    offset: int = Field(default=1, ge=1, description="起始行号（从 1 开始），默认为 1")
+    limit: int = Field(default=500, ge=1, le=2000, description="最大读取行数，默认 500，上限 2000")
     encode: str = Field(default="utf-8", description="The encoding of the file")
 
 
 @tool("read_file", args_schema=ReadFileInput)
-def read_file(file_path: str, encode: str = "utf-8") -> FileContentResponse:
-    """读取文件内容"""
-    log.info("read_file: file_path=%s encode=%s", file_path, encode)
+def read_file(file_path: str, offset: int = 1, limit: int = 500, encode: str = "utf-8") -> FileContentResponse:
+    """读取文件内容，支持指定行号范围分段读取"""
+    log.info("read_file: file_path=%s offset=%d limit=%d encode=%s", file_path, offset, limit, encode)
     try:
         with open(file_path, mode="r", encoding=encode) as f:
-            content = f.read()
-            log.debug("read_file 成功: %d 字符", len(content))
-            return FileContentResponse(content=content, success=True, file_path=file_path)
+            lines = f.readlines()
+        total_lines = len(lines)
+        start = offset - 1
+        end = min(start + limit, total_lines)
+        if start >= total_lines:
+            log.warning("read_file 失败: offset=%d 超出总行数 %d", offset, total_lines)
+            return FileContentResponse(
+                content="", success=False, file_path=file_path,
+                error=f"offset={offset} 超出文件总行数 {total_lines}"
+            )
+        content = "".join(lines[start:end])
+        log.debug("read_file 成功: lines=%d-%d/%d, %d 字符", offset, offset + len(lines[start:end]) - 1, total_lines, len(content))
+        return FileContentResponse(
+            content=content, success=True, file_path=file_path,
+            bytes_read=len(content.encode(encode))
+        )
 
     except FileNotFoundError:
         log.warning("read_file 失败: 文件不存在 %s", file_path)
@@ -55,7 +70,7 @@ class FetchAPIInput(BaseModel):
 
 @tool("fetch_api", args_schema=FetchAPIInput)
 def fetch_api(url: str) -> FetchAPIResponse:
-    """请求外部 API，返回响应内容"""
+    """发送 GET 请求获取外部 API 数据，返回响应内容。仅支持 GET，不支持 POST/PUT 等。"""
     log.info("fetch_api: url=%s", url)
     try:
         with httpx.Client() as client:
@@ -75,11 +90,11 @@ class RunCommandInput(BaseModel):
     command: str = Field(
         description="The shell command to execute, you should ensure the command match the user's OS platform and be safe to run"
     )
-    timeout: int = Field(description="The time to wait for a response before giving up. unit: seconds")
+    timeout: int = Field(default=30, ge=1, le=300, description="超时秒数，默认 30，最长 300")
 
 
 @tool("execute_shell", args_schema=RunCommandInput)
-def execute_shell(command: str, timeout: int) -> CommandResponse:
+def execute_shell(command: str, timeout: int = 30) -> CommandResponse:
     """执行 shell 命令"""
     log.info("execute_shell: command=%s timeout=%ds", command, timeout)
     try:
@@ -283,18 +298,24 @@ def edit_file(file_path: str, old_text: str, new_text: str) -> EditResponse:
 class SearchFilesInput(BaseModel):
     pattern: str = Field(description="glob 匹配模式，如 '**/*.py' 或 'src/**/*.json'")
     directory: str = Field(default=".", description="搜索的根目录，默认为当前目录")
+    max_results: int = Field(default=100, ge=1, le=500, description="最大返回文件数")
 
 
 @tool("search_files", args_schema=SearchFilesInput)
-def search_files(pattern: str, directory: str = ".") -> SearchResponse:
-    """使用 glob 模式搜索文件，返回匹配的文件路径列表"""
-    log.info("search_files: pattern=%s directory=%s", pattern, directory)
+def search_files(pattern: str, directory: str = ".", max_results: int = 100) -> SearchResponse:
+    """使用 glob 模式搜索文件，返回匹配的文件路径列表。自动排除 __pycache__、.git、node_modules、.venv 等目录。"""
+    log.info("search_files: pattern=%s directory=%s max=%d", pattern, directory, max_results)
     try:
         full_pattern = os.path.join(directory, pattern)
         matches = _glob.glob(full_pattern, recursive=True)
-        matches = [m for m in matches if "__pycache__" not in m and ".git" not in m]
+        # 过滤常见非源码目录
+        excluded = {"__pycache__", ".git", "node_modules", ".venv", "venv", ".tox", ".eggs", ".mypy_cache", ".pytest_cache", ".ruff_cache"}
+        matches = [
+            m for m in matches
+            if not any(f"{os.sep}{ex}{os.sep}" in m or m.endswith(f"{os.sep}{ex}") or ex in m.split(os.sep) for ex in excluded)
+        ]
         log.debug("search_files 找到 %d 个文件", len(matches))
-        return SearchResponse(success=True, files=matches[:100], total=len(matches))
+        return SearchResponse(success=True, files=matches[:max_results], total=len(matches))
     except Exception as e:
         log.error("search_files 异常: %s", e)
         return SearchResponse(success=False, error=str(e))
