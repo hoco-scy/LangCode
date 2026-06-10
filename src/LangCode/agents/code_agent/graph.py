@@ -103,7 +103,7 @@ def _run_syntax_check(files: list[str]) -> list[str]:
         try:
             result = subprocess.run(
                 [sys.executable, "-m", "py_compile", fpath],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True, text=True, encoding="utf-8", timeout=10,
             )
             if result.returncode != 0:
                 error_msg = result.stderr.strip() or f"语法错误: {fpath}"
@@ -128,7 +128,7 @@ def _run_import_check(files: list[str], project_root: str = ".") -> list[str]:
         try:
             result = subprocess.run(
                 [sys.executable, "-c", f"import sys; sys.path.insert(0, '{project_root}'); __import__('{mod_path}')"],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True, text=True, encoding="utf-8", timeout=10,
             )
             if result.returncode != 0:
                 stderr = result.stderr.strip()
@@ -150,7 +150,7 @@ def _run_tests(test_files: list[str]) -> list[str]:
     try:
         result = subprocess.run(
             [sys.executable, "-m", "pytest"] + test_files + ["-x", "-q", "--tb=short"],
-            capture_output=True, text=True, timeout=60,
+            capture_output=True, text=True, encoding="utf-8", timeout=60,
         )
         if result.returncode != 0:
             # 提取失败摘要（最后几行）

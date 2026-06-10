@@ -109,3 +109,136 @@ class TestSQLiteMemoryStore:
 
         memory_store.delete(py_results[0].id)
         assert memory_store.count() == 4
+
+
+class TestSQLiteMemoryStoreThreading:
+    """多线程场景测试 — 模拟 TUI 模式下主线程创建 store，后台线程访问"""
+
+    def test_cross_thread_access(self, memory_store):
+        """主线程创建 store，子线程调用方法不报错"""
+        import threading
+
+        errors = []
+        results = []
+
+        def run_in_thread():
+            try:
+                memory_store.save(MemoryRecord(content="cross-thread memory", memory_type="fact"))
+                results.append(memory_store.count())
+                results.append(memory_store.search("cross-thread"))
+                results.append(memory_store.list_all())
+            except Exception as e:
+                errors.append(str(e))
+
+        t = threading.Thread(target=run_in_thread)
+        t.start()
+        t.join()
+
+        assert errors == [], f"跨线程访问失败: {errors}"
+        assert results[0] == 1
+        assert len(results[1]) == 1
+        assert len(results[2]) == 1
+
+    def test_concurrent_writes(self, memory_store):
+        """多个线程同时写入，Lock 保证数据一致"""
+        import threading
+
+        num_threads = 5
+        writes_per_thread = 20
+        barrier = threading.Barrier(num_threads)
+
+        def writer(thread_id):
+            barrier.wait()  # 让所有线程同时开始
+            for i in range(writes_per_thread):
+                memory_store.save(MemoryRecord(
+                    content=f"thread-{thread_id}-item-{i}",
+                    memory_type="fact",
+                ))
+
+        threads = [threading.Thread(target=writer, args=(i,)) for i in range(num_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert memory_store.count() == num_threads * writes_per_thread
+
+    def test_concurrent_reads_and_writes(self, memory_store):
+        """读写并发，不会出现异常"""
+        import threading
+
+        # 预写入一些数据
+        for i in range(10):
+            memory_store.save(MemoryRecord(content=f"初始数据 {i}", memory_type="fact"))
+
+        errors = []
+
+        def reader():
+            for _ in range(50):
+                try:
+                    memory_store.search("初始")
+                    memory_store.list_all()
+                    memory_store.count()
+                except Exception as e:
+                    errors.append(str(e))
+
+        def writer():
+            for i in range(50):
+                try:
+                    memory_store.save(MemoryRecord(content=f"新数据 {i}", memory_type="fact"))
+                except Exception as e:
+                    errors.append(str(e))
+
+        threads = []
+        for _ in range(3):
+            threads.append(threading.Thread(target=reader))
+        threads.append(threading.Thread(target=writer))
+
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert errors == [], f"并发读写出现异常: {errors}"
+        assert memory_store.count() == 60  # 10 预写入 + 50 新写入
+
+    def test_cross_thread_delete(self, memory_store):
+        """子线程中删除记录"""
+        import threading
+
+        rid = memory_store.save(MemoryRecord(content="待删除", memory_type="fact"))
+
+        def delete_in_thread():
+            return memory_store.delete(rid)
+
+        t = threading.Thread(target=delete_in_thread)
+        t.start()
+        t.join()
+
+        assert memory_store.count() == 0
+
+    def test_tui_pattern(self, memory_store):
+        """模拟 TUI 实际使用模式：主线程创建 store → 后台线程执行 graph → 工具调用 store"""
+        import threading
+
+        # 模拟 bridge.py 的模式：主线程有 store 引用，传给后台线程
+        def background_graph_execution(store, results_collector):
+            """模拟 graph.stream 在后台线程执行时调用 memory 工具"""
+            store.save(MemoryRecord(content="用户叫 scy", memory_type="fact", tags=["name"]))
+            store.save(MemoryRecord(content="偏好 Python", memory_type="preference", tags=["lang"]))
+            found = store.search("scy")
+            results_collector.append(found)
+            all_items = store.list_all()
+            results_collector.append(all_items)
+
+        results = []
+        t = threading.Thread(
+            target=background_graph_execution,
+            args=(memory_store, results),
+        )
+        t.start()
+        t.join()
+
+        assert len(results[0]) == 1
+        assert results[0][0].content == "用户叫 scy"
+        assert len(results[1]) == 2

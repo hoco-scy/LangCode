@@ -2,6 +2,7 @@
 
 import sqlite3
 import json
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,8 +30,9 @@ class SQLiteMemoryStore:
     def __init__(self, db_path: str = ".langcode/memory.db"):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(self.db_path))
+        self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        self._lock = threading.Lock()
         self._init_db()
         log.info("MemoryStore 初始化: %s", self.db_path)
 
@@ -75,67 +77,67 @@ class SQLiteMemoryStore:
 
     def save(self, record: MemoryRecord) -> str:
         """保存一条记忆，返回 ID"""
-        self._conn.execute(
-            "INSERT OR REPLACE INTO memories (id, content, memory_type, tags, created_at, access_count) VALUES (?, ?, ?, ?, ?, ?)",
-            (record.id, record.content, record.memory_type, json.dumps(record.tags, ensure_ascii=False), record.created_at, record.access_count)
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO memories (id, content, memory_type, tags, created_at, access_count) VALUES (?, ?, ?, ?, ?, ?)",
+                (record.id, record.content, record.memory_type, json.dumps(record.tags, ensure_ascii=False), record.created_at, record.access_count)
+            )
+            self._conn.commit()
         log.debug("记忆已保存: id=%s type=%s", record.id, record.memory_type)
         return record.id
 
     def search(self, query: str, top_k: int = 5) -> list[MemoryRecord]:
         """全文搜索记忆"""
-        # 先尝试 FTS5 搜索
-        try:
-            cursor = self._conn.execute(
-                """SELECT m.id, m.content, m.memory_type, m.tags, m.created_at, m.access_count
-                   FROM memories_fts f
-                   JOIN memories m ON f.id = m.id
-                   WHERE memories_fts MATCH ?
-                   ORDER BY rank
-                   LIMIT ?""",
-                (query, top_k)
-            )
-            rows = cursor.fetchall()
-        except Exception:
-            # FTS 匹配失败（如特殊字符），退化为 LIKE 搜索
-            log.debug("FTS 搜索失败，退化为 LIKE 搜索")
-            cursor = self._conn.execute(
-                """SELECT id, content, memory_type, tags, created_at, access_count
-                   FROM memories WHERE content LIKE ? LIMIT ?""",
-                (f"%{query}%", top_k)
-            )
-            rows = cursor.fetchall()
+        with self._lock:
+            try:
+                cursor = self._conn.execute(
+                    """SELECT m.id, m.content, m.memory_type, m.tags, m.created_at, m.access_count
+                       FROM memories_fts f
+                       JOIN memories m ON f.id = m.id
+                       WHERE memories_fts MATCH ?
+                       ORDER BY rank
+                       LIMIT ?""",
+                    (query, top_k)
+                )
+                rows = cursor.fetchall()
+            except Exception:
+                log.debug("FTS 搜索失败，退化为 LIKE 搜索")
+                cursor = self._conn.execute(
+                    """SELECT id, content, memory_type, tags, created_at, access_count
+                       FROM memories WHERE content LIKE ? LIMIT ?""",
+                    (f"%{query}%", top_k)
+                )
+                rows = cursor.fetchall()
 
-        # 更新 access_count
-        results = []
-        for row in rows:
-            self._conn.execute("UPDATE memories SET access_count = access_count + 1 WHERE id = ?", (row["id"],))
-            results.append(MemoryRecord(
-                id=row["id"],
-                content=row["content"],
-                memory_type=row["memory_type"],
-                tags=json.loads(row["tags"]),
-                created_at=row["created_at"],
-                access_count=row["access_count"] + 1,
-            ))
-        self._conn.commit()
+            results = []
+            for row in rows:
+                self._conn.execute("UPDATE memories SET access_count = access_count + 1 WHERE id = ?", (row["id"],))
+                results.append(MemoryRecord(
+                    id=row["id"],
+                    content=row["content"],
+                    memory_type=row["memory_type"],
+                    tags=json.loads(row["tags"]),
+                    created_at=row["created_at"],
+                    access_count=row["access_count"] + 1,
+                ))
+            self._conn.commit()
         log.debug("搜索 '%s' 找到 %d 条记忆", query, len(results))
         return results
 
     def list_all(self, memory_type: Optional[str] = None, limit: int = 50) -> list[MemoryRecord]:
         """列出所有记忆，可按类型过滤"""
-        if memory_type:
-            cursor = self._conn.execute(
-                "SELECT id, content, memory_type, tags, created_at, access_count FROM memories WHERE memory_type = ? ORDER BY created_at DESC LIMIT ?",
-                (memory_type, limit)
-            )
-        else:
-            cursor = self._conn.execute(
-                "SELECT id, content, memory_type, tags, created_at, access_count FROM memories ORDER BY created_at DESC LIMIT ?",
-                (limit,)
-            )
-        rows = cursor.fetchall()
+        with self._lock:
+            if memory_type:
+                cursor = self._conn.execute(
+                    "SELECT id, content, memory_type, tags, created_at, access_count FROM memories WHERE memory_type = ? ORDER BY created_at DESC LIMIT ?",
+                    (memory_type, limit)
+                )
+            else:
+                cursor = self._conn.execute(
+                    "SELECT id, content, memory_type, tags, created_at, access_count FROM memories ORDER BY created_at DESC LIMIT ?",
+                    (limit,)
+                )
+            rows = cursor.fetchall()
         return [MemoryRecord(
             id=row["id"], content=row["content"], memory_type=row["memory_type"],
             tags=json.loads(row["tags"]), created_at=row["created_at"], access_count=row["access_count"]
@@ -143,13 +145,15 @@ class SQLiteMemoryStore:
 
     def delete(self, memory_id: str) -> bool:
         """删除一条记忆"""
-        cursor = self._conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
-        self._conn.commit()
-        deleted = cursor.rowcount > 0
+        with self._lock:
+            cursor = self._conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
+            self._conn.commit()
+            deleted = cursor.rowcount > 0
         log.debug("删除记忆 %s: %s", memory_id, "成功" if deleted else "不存在")
         return deleted
 
     def count(self) -> int:
         """返回记忆总数"""
-        row = self._conn.execute("SELECT COUNT(*) as cnt FROM memories").fetchone()
+        with self._lock:
+            row = self._conn.execute("SELECT COUNT(*) as cnt FROM memories").fetchone()
         return row["cnt"]

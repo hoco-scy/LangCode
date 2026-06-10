@@ -88,6 +88,8 @@ def execute_shell(command: str, timeout: int) -> CommandResponse:
             shell=True,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout
         )
         log.debug("execute_shell 完成: return_code=%d", result.returncode)
@@ -167,7 +169,9 @@ def run_python(code: str, timeout: int = 15) -> PythonResponse:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            env={"PYTHONPATH": ""},
+            encoding="utf-8",
+            errors="replace",
+            env={**os.environ, "PYTHONPATH": "", "PYTHONUTF8": "1"},
         )
     except Exception as e:
         log.error("run_python 启动失败: %s", e)
@@ -189,8 +193,8 @@ def run_python(code: str, timeout: int = 15) -> PythonResponse:
 
     watchdog.join(timeout=1)
 
-    stdout = stdout.strip() or None
-    stderr = stderr.strip() or None
+    stdout = stdout.strip() if stdout else None
+    stderr = stderr.strip() if stderr else None
     success = proc.returncode == 0
 
     if success:
@@ -312,7 +316,7 @@ def git_status(path: Optional[str] = None) -> GitStatusResponse:
         cmd = ["git", "status", "--short"]
         if path:
             cmd.append(path)
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", timeout=10)
         if result.returncode != 0:
             return GitStatusResponse(success=False, error=result.stderr.strip() or "不在 Git 仓库中")
         output = result.stdout.strip()
@@ -338,7 +342,7 @@ def git_diff(file_path: Optional[str] = None, staged: bool = False) -> GitDiffRe
             cmd.append("--staged")
         if file_path:
             cmd.extend(["--", file_path])
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", timeout=15)
         if result.returncode != 0:
             return GitDiffResponse(success=False, error=result.stderr.strip())
         output = result.stdout.strip()
@@ -366,7 +370,7 @@ def git_log(count: int = 10, file_path: Optional[str] = None) -> GitLogResponse:
         cmd = ["git", "log", f"-{count}", "--oneline", "--no-decorate"]
         if file_path:
             cmd.extend(["--", file_path])
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", timeout=10)
         if result.returncode != 0:
             return GitLogResponse(success=False, error=result.stderr.strip())
         output = result.stdout.strip()
@@ -403,7 +407,7 @@ def git_blame(file_path: str, start_line: Optional[int] = None, end_line: Option
         elif start_line:
             cmd.extend(["-L", f"{start_line},+20"])
         cmd.append(file_path)
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", timeout=15)
         if result.returncode != 0:
             return GitBlameResponse(success=False, error=result.stderr.strip())
         authors = {}
