@@ -1,8 +1,11 @@
-# 目前实现文件读取、阅读网站、shell执行、Python运行、文件写入、文件编辑、文件搜索
+# 工具集：文件读写、Shell/Python 执行、API 请求、Git 操作
 import subprocess
 import sys
 import os
 import glob as _glob
+import threading
+import platform as _platform
+import psutil
 
 import httpx
 from langchain.tools import tool
@@ -12,7 +15,7 @@ from typing import Optional, Literal
 from LangCode.shared.logger import get_logger
 from LangCode.shared.schemas import (
     ToolResponse, FileContentResponse, WriteResponse, EditResponse,
-    SearchResponse, CommandResponse, PythonResponse,
+    SearchResponse, CommandResponse, PythonResponse, FetchAPIResponse,
     GitStatusResponse, GitDiffResponse, GitLogResponse, GitBlameResponse,
     GitCommitInfo, GitBlameEntry,
 )
@@ -51,17 +54,21 @@ class FetchAPIInput(BaseModel):
 
 
 @tool("fetch_api", args_schema=FetchAPIInput)
-def fetch_api(url: str) -> ToolResponse:
-    """请求外部 API"""
+def fetch_api(url: str) -> FetchAPIResponse:
+    """请求外部 API，返回响应内容"""
     log.info("fetch_api: url=%s", url)
     try:
         with httpx.Client() as client:
             resp = client.get(url)
             log.debug("fetch_api 成功: status=%d size=%d", resp.status_code, len(resp.content))
-            return ToolResponse(success=True, error=None)
+            return FetchAPIResponse(
+                success=True,
+                content=resp.text,
+                status_code=resp.status_code,
+            )
     except Exception as e:
         log.error("fetch_api 失败: %s", e)
-        return ToolResponse(success=False, error=str(e))
+        return FetchAPIResponse(success=False, error=str(e))
 
 
 class RunCommandInput(BaseModel):
@@ -101,10 +108,6 @@ class RunPythonInput(BaseModel):
     code: str = Field(description="要执行的 Python 代码")
     timeout: int = Field(default=15, ge=1, le=60, description="超时秒数，最长 60 秒")
 
-
-import platform
-import threading
-import psutil
 
 def _memory_watchdog(proc: subprocess.Popen, limit_mb: int):
     """在独立线程中监控子进程内存，超限直接 kill"""
@@ -410,8 +413,8 @@ def git_blame(file_path: str, start_line: Optional[int] = None, end_line: Option
                 authors.setdefault(current_commit, {})["author"] = line[7:]
             elif line.startswith("summary "):
                 authors.setdefault(current_commit, {})["summary"] = line[8:]
-            elif len(line) >= 40 and line[:40].strip().isalnum():
-                current_commit = line[:40].strip()
+            elif len(line) >= 40 and all(c in "0123456789abcdef" for c in line[:40].lower()):
+                current_commit = line[:40]
         unique = {}
         for info in authors.values():
             key = f"{info.get('author', '?')}: {info.get('summary', '?')}"

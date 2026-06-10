@@ -90,3 +90,9 @@ class GitBlameResponse(ToolResponse):
     """Git Blame 响应"""
     file: Optional[str] = Field(default=None, description="文件路径")
     blame: list[GitBlameEntry] = Field(default_factory=list, description="blame 条目列表")
+
+
+class FetchAPIResponse(ToolResponse):
+    """API 请求响应"""
+    content: Optional[str] = Field(default=None, description="响应体内容")
+    status_code: Optional[int] = Field(default=None, description="HTTP 状态码")
