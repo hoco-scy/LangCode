@@ -1,17 +1,9 @@
 """ResearchAgent：专注于文件搜索、阅读、信息总结"""
 
-from typing import Literal
-
-from langchain_core.messages import AIMessage
 from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
-from langgraph.constants import START, END
-from langgraph.graph import StateGraph
-from langgraph.graph.state import CompiledStateGraph
-from langgraph.prebuilt import ToolNode
 from langgraph.types import Checkpointer
 
-from LangCode.shared.state import LCState
 from LangCode.shared.logger import get_logger
 from LangCode.agents.base import BaseAgent
 
@@ -45,37 +37,12 @@ RESEARCH_AGENT_PROMPT = """你是一个专业的代码研究分析 Agent。
 """
 
 
-def _call_research_llm(state: LCState, llm: ChatOpenAI) -> dict:
-    response = llm.invoke(state["messages"])
-    return {"messages": [response]}
-
-
-def _should_use_tools(state: LCState) -> Literal["tools", "__end__"]:
-    last_message = state["messages"][-1]
-    if isinstance(last_message, AIMessage) and last_message.tool_calls:
-        return "tools"
-    return END
-
-
 class ResearchAgent(BaseAgent):
     name = "research"
     description = "代码研究员：搜索、阅读、分析代码库，总结发现和生成报告"
 
     def __init__(self, llm: ChatOpenAI, checkpoint: Checkpointer, tools: list[BaseTool]):
         super().__init__(llm, checkpoint, tools)
-
-    def build_graph(self) -> CompiledStateGraph:
-        builder = StateGraph(LCState)
-        tool_node = ToolNode(tools=self.tools)
-
-        builder.add_node("agent", lambda state: _call_research_llm(state, self.bound_llm))
-        builder.add_node("tools", tool_node)
-
-        builder.add_edge(START, "agent")
-        builder.add_conditional_edges("agent", _should_use_tools)
-        builder.add_edge("tools", "agent")
-
-        return builder.compile(checkpointer=self.checkpoint)
 
     def get_system_prompt(self) -> str:
         return RESEARCH_AGENT_PROMPT

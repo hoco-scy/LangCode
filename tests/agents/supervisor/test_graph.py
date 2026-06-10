@@ -3,8 +3,8 @@
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.constants import END
 
+from LangCode.shared.routing import should_use_tools
 from LangCode.agents.supervisor.graph import (
-    _should_use_tools,
     _increment_retry,
     _should_plan,
     _plan_or_end,
@@ -17,11 +17,11 @@ from LangCode.planning.schema import Plan, PlanStep
 class TestShouldUseTools:
     def test_tool_calls_returns_tools(self, ai_tool_message):
         state = {"messages": [HumanMessage(content="hi"), ai_tool_message]}
-        assert _should_use_tools(state) == "tools"
+        assert should_use_tools(state) == "tools"
 
     def test_plain_message_returns_end(self, ai_plain_message):
         state = {"messages": [HumanMessage(content="hi"), ai_plain_message]}
-        assert _should_use_tools(state) == END
+        assert should_use_tools(state) == END
 
 
 class TestIncrementRetry:

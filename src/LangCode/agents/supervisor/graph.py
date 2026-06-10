@@ -14,6 +14,7 @@ from langgraph.prebuilt import ToolNode
 from langgraph.types import Checkpointer
 
 from LangCode.shared.state import LCState
+from LangCode.shared.routing import should_use_tools
 from LangCode.shared.logger import get_logger
 from LangCode.agents.supervisor.prompts import *
 from LangCode.planning.schema import Plan
@@ -75,14 +76,6 @@ def _call_llm(state: LCState, llm: ChatOpenAI) -> dict:
     else:
         log.debug("LLM 直接回复: %s...", (response.content or "")[:120])
     return {"messages": [response], "tool_retry_count": 0, "memory_context": ""}
-
-
-def _should_use_tools(state: LCState) -> Literal["tools", "__end__"]:
-    """ReAct 路由：检查 LLM 是否产生了工具调用"""
-    last_message = state["messages"][-1]
-    if isinstance(last_message, AIMessage) and last_message.tool_calls:
-        return "tools"
-    return END
 
 
 def _increment_retry(state: LCState) -> dict:
@@ -184,7 +177,7 @@ class SupervisorAgent:
         builder.add_edge(START, "agent")
 
         # agent 节点：有工具调用 → tools，否则 → END
-        builder.add_conditional_edges("agent", _should_use_tools)
+        builder.add_conditional_edges("agent", should_use_tools)
 
         # tools → retry_tracker → 检查是否有活跃计划
         builder.add_edge("tools", "retry_tracker")

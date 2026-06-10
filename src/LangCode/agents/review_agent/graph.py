@@ -1,17 +1,9 @@
 """ReviewAgent：专注于代码审查、安全分析、质量评估"""
 
-from typing import Literal
-
-from langchain_core.messages import AIMessage
 from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
-from langgraph.constants import START, END
-from langgraph.graph import StateGraph
-from langgraph.graph.state import CompiledStateGraph
-from langgraph.prebuilt import ToolNode
 from langgraph.types import Checkpointer
 
-from LangCode.shared.state import LCState
 from LangCode.shared.logger import get_logger
 from LangCode.agents.base import BaseAgent
 
@@ -64,37 +56,12 @@ REVIEW_AGENT_PROMPT = """你是一个专业的代码审查 Agent。
 """
 
 
-def _call_review_llm(state: LCState, llm: ChatOpenAI) -> dict:
-    response = llm.invoke(state["messages"])
-    return {"messages": [response]}
-
-
-def _should_use_tools(state: LCState) -> Literal["tools", "__end__"]:
-    last_message = state["messages"][-1]
-    if isinstance(last_message, AIMessage) and last_message.tool_calls:
-        return "tools"
-    return END
-
-
 class ReviewAgent(BaseAgent):
     name = "review"
     description = "代码审查员：审查代码质量、安全性，发现 bug，提供改进建议"
 
     def __init__(self, llm: ChatOpenAI, checkpoint: Checkpointer, tools: list[BaseTool]):
         super().__init__(llm, checkpoint, tools)
-
-    def build_graph(self) -> CompiledStateGraph:
-        builder = StateGraph(LCState)
-        tool_node = ToolNode(tools=self.tools)
-
-        builder.add_node("agent", lambda state: _call_review_llm(state, self.bound_llm))
-        builder.add_node("tools", tool_node)
-
-        builder.add_edge(START, "agent")
-        builder.add_conditional_edges("agent", _should_use_tools)
-        builder.add_edge("tools", "agent")
-
-        return builder.compile(checkpointer=self.checkpoint)
 
     def get_system_prompt(self) -> str:
         return REVIEW_AGENT_PROMPT

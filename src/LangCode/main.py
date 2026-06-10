@@ -14,7 +14,7 @@ from LangCode.shared.logger import get_logger
 # 记忆系统
 from LangCode.memory.store import SQLiteMemoryStore
 from LangCode.memory.manager import MemoryManager
-from LangCode.memory.tools import init_memory_tools, memory_save, memory_search, memory_list
+from LangCode.memory.tools import create_memory_tools
 
 # 规划系统
 from LangCode.planning.tools import plan_create, plan_show
@@ -23,14 +23,14 @@ from LangCode.planning.tools import plan_create, plan_show
 from LangCode.agents.code_agent import CodeAgent
 from LangCode.agents.research_agent import ResearchAgent
 from LangCode.agents.review_agent import ReviewAgent
-from LangCode.agents.delegate_tools import init_delegate_tools, create_delegate_tools
+from LangCode.agents.delegate_tools import create_delegate_tools
 
 log = get_logger("main")
 
-# 初始化记忆系统
+# 初始化记忆系统（工厂模式，通过闭包绑定 store/manager，无全局变量）
 memory_store = SQLiteMemoryStore(db_path=".langcode/memory.db")
 memory_manager = MemoryManager(store=memory_store, llm=llm)
-init_memory_tools(memory_store, memory_manager)
+memory_save, memory_search, memory_list = create_memory_tools(memory_store, memory_manager)
 
 # 初始化子 Agent
 lc_checkpoint_sub = MemorySaver()
@@ -41,8 +41,9 @@ sub_agents = {
     "research": ResearchAgent(llm=llm, checkpoint=lc_checkpoint_sub, tools=research_tools),
     "review": ReviewAgent(llm=llm, checkpoint=lc_checkpoint_sub, tools=review_tools),
 }
-init_delegate_tools(sub_agents)
-delegate_tools = create_delegate_tools()
+
+# 委托工具（工厂模式，通过参数注入 agents，无全局变量）
+delegate_tools = create_delegate_tools(sub_agents)
 
 # 合并所有工具（原有 + 记忆 + 规划 + 委托）
 all_tools_full = all_tools + [memory_save, memory_search, memory_list, plan_create, plan_show] + delegate_tools
