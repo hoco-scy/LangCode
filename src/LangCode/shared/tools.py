@@ -10,6 +10,12 @@ from pydantic import BaseModel, Field
 from typing import Optional, Literal
 
 from LangCode.shared.logger import get_logger
+from LangCode.shared.schemas import (
+    ToolResponse, FileContentResponse, WriteResponse, EditResponse,
+    SearchResponse, CommandResponse, PythonResponse,
+    GitStatusResponse, GitDiffResponse, GitLogResponse, GitBlameResponse,
+    GitCommitInfo, GitBlameEntry,
+)
 
 log = get_logger("tools")
 
@@ -20,24 +26,24 @@ class ReadFileInput(BaseModel):
 
 
 @tool("read_file", args_schema=ReadFileInput)
-def read_file(file_path: str, encode: str = "utf-8") -> dict:
+def read_file(file_path: str, encode: str = "utf-8") -> FileContentResponse:
     """读取文件内容"""
     log.info("read_file: file_path=%s encode=%s", file_path, encode)
     try:
         with open(file_path, mode="r", encoding=encode) as f:
             content = f.read()
             log.debug("read_file 成功: %d 字符", len(content))
-            return {"content": content, "success": True}
+            return FileContentResponse(content=content, success=True, file_path=file_path)
 
     except FileNotFoundError:
         log.warning("read_file 失败: 文件不存在 %s", file_path)
-        return {"content": "", "success": False, "error": "File not found"}
+        return FileContentResponse(content="", success=False, error="File not found")
     except UnicodeDecodeError:
         log.warning("read_file 失败: 编码错误 %s", file_path)
-        return {"content": "", "success": False, "error": "Encoding error"}
+        return FileContentResponse(content="", success=False, error="Encoding error")
     except Exception as e:
         log.error("read_file 异常: %s", e)
-        return {"content": "", "success": False, "error": e}
+        return FileContentResponse(content="", success=False, error=str(e))
 
 
 class FetchAPIInput(BaseModel):
@@ -45,17 +51,17 @@ class FetchAPIInput(BaseModel):
 
 
 @tool("fetch_api", args_schema=FetchAPIInput)
-def fetch_api(url: str) -> dict:
+def fetch_api(url: str) -> ToolResponse:
     """请求外部 API"""
     log.info("fetch_api: url=%s", url)
     try:
         with httpx.Client() as client:
             resp = client.get(url)
             log.debug("fetch_api 成功: status=%d size=%d", resp.status_code, len(resp.content))
-            return {"content": resp.content.decode(), "success": True}
+            return ToolResponse(success=True, error=None)
     except Exception as e:
         log.error("fetch_api 失败: %s", e)
-        return {"content": "", "success": False, "error": str(e)}
+        return ToolResponse(success=False, error=str(e))
 
 
 class RunCommandInput(BaseModel):
@@ -66,7 +72,7 @@ class RunCommandInput(BaseModel):
 
 
 @tool("execute_shell", args_schema=RunCommandInput)
-def execute_shell(command: str, timeout: int) -> dict:
+def execute_shell(command: str, timeout: int) -> CommandResponse:
     """执行 shell 命令"""
     log.info("execute_shell: command=%s timeout=%ds", command, timeout)
     try:
@@ -75,20 +81,20 @@ def execute_shell(command: str, timeout: int) -> dict:
             shell=True,
             capture_output=True,
             text=True,
-            timeout=timeout  # 防止命令挂死
+            timeout=timeout
         )
         log.debug("execute_shell 完成: return_code=%d", result.returncode)
         if result.returncode != 0:
             log.warning("execute_shell 非零退出: stderr=%s", result.stderr[:200])
-        return {
-            "output": result.stdout,
-            "error": result.stderr if result.returncode != 0 else None,
-            "success": result.returncode == 0,
-            "return_code": result.returncode,
-        }
+        return CommandResponse(
+            output=result.stdout,
+            error=result.stderr if result.returncode != 0 else None,
+            success=result.returncode == 0,
+            return_code=result.returncode,
+        )
     except subprocess.TimeoutExpired:
         log.warning("execute_shell 超时: %ds", timeout)
-        return {"output": None, "error": f"命令执行超时{timeout}s", "success": False}
+        return CommandResponse(output=None, error=f"命令执行超时{timeout}s", success=False)
 
 
 class RunPythonInput(BaseModel):
@@ -145,7 +151,7 @@ USER_CODE_PLACEHOLDER
 
 
 @tool("run_python", args_schema=RunPythonInput)
-def run_python(code: str, timeout: int = 15) -> dict:
+def run_python(code: str, timeout: int = 15) -> PythonResponse:
     """在隔离子进程中执行 Python 代码，跨平台支持 Windows/Unix"""
     code_preview = code[:200].replace("\n", " ")
     log.info("run_python: timeout=%ds code=%s...", timeout, code_preview)
@@ -162,9 +168,8 @@ def run_python(code: str, timeout: int = 15) -> dict:
         )
     except Exception as e:
         log.error("run_python 启动失败: %s", e)
-        return {"success": False, "output": None, "error": f"启动子进程失败：{e}"}
+        return PythonResponse(success=False, output=None, error=f"启动子进程失败：{e}")
 
-    # 启动内存监控线程（跨平台）
     watchdog = threading.Thread(
         target=_memory_watchdog, args=(proc, 256), daemon=True
     )
@@ -176,8 +181,8 @@ def run_python(code: str, timeout: int = 15) -> dict:
         proc.kill()
         proc.communicate()
         log.warning("run_python 超时: >%ds", timeout)
-        return {"success": False, "output": None,
-                "error": f"执行超时（>{timeout}s），进程已强制终止"}
+        return PythonResponse(success=False, output=None,
+                              error=f"执行超时（>{timeout}s），进程已强制终止")
 
     watchdog.join(timeout=1)
 
@@ -187,15 +192,14 @@ def run_python(code: str, timeout: int = 15) -> dict:
 
     if success:
         log.debug("run_python 成功: output=%s", (stdout or "")[:200])
-        return {"success": True, "output": stdout, "error": None}
+        return PythonResponse(success=True, output=stdout, error=None)
     else:
-        # 区分内存超限 vs 普通错误
         if proc.returncode == -9 or "MemoryError" in (stderr or ""):
             error = "内存超限（>256MB），进程已强制终止"
         else:
             error = _extract_user_error(stderr)
         log.warning("run_python 失败: error=%s", error)
-        return {"success": False, "output": stdout, "error": error}
+        return PythonResponse(success=False, output=stdout, error=error)
 
 def _extract_user_error(stderr: str | None) -> str | None:
     """
@@ -220,7 +224,7 @@ class WriteFileInput(BaseModel):
 
 
 @tool("write_file", args_schema=WriteFileInput)
-def write_file(file_path: str, content: str, encode: str = "utf-8") -> dict:
+def write_file(file_path: str, content: str, encode: str = "utf-8") -> WriteResponse:
     """写入文件内容，如果文件不存在会自动创建（包括父目录）"""
     log.info("write_file: file_path=%s len=%d", file_path, len(content))
     try:
@@ -228,10 +232,10 @@ def write_file(file_path: str, content: str, encode: str = "utf-8") -> dict:
         with open(file_path, mode="w", encoding=encode) as f:
             f.write(content)
         log.debug("write_file 成功: %s", file_path)
-        return {"success": True, "file_path": file_path, "bytes_written": len(content.encode(encode))}
+        return WriteResponse(success=True, file_path=file_path, bytes_written=len(content.encode(encode)))
     except Exception as e:
         log.error("write_file 失败: %s", e)
-        return {"success": False, "error": str(e)}
+        return WriteResponse(success=False, error=str(e))
 
 
 class EditFileInput(BaseModel):
@@ -241,7 +245,7 @@ class EditFileInput(BaseModel):
 
 
 @tool("edit_file", args_schema=EditFileInput)
-def edit_file(file_path: str, old_text: str, new_text: str) -> dict:
+def edit_file(file_path: str, old_text: str, new_text: str) -> EditResponse:
     """精确替换文件中的指定文本。old_text 必须与文件中的内容完全匹配（包括缩进和换行）。"""
     log.info("edit_file: file_path=%s old_len=%d new_len=%d", file_path, len(old_text), len(new_text))
     try:
@@ -251,22 +255,22 @@ def edit_file(file_path: str, old_text: str, new_text: str) -> dict:
         count = content.count(old_text)
         if count == 0:
             log.warning("edit_file: 未找到匹配文本")
-            return {"success": False, "error": "未在文件中找到匹配的文本，请检查 old_text 是否精确匹配"}
+            return EditResponse(success=False, error="未在文件中找到匹配的文本，请检查 old_text 是否精确匹配")
         if count > 1:
             log.warning("edit_file: 匹配到 %d 处，需要唯一匹配", count)
-            return {"success": False, "error": f"匹配到 {count} 处相同文本，请提供更精确的上下文使其唯一"}
+            return EditResponse(success=False, error=f"匹配到 {count} 处相同文本，请提供更精确的上下文使其唯一")
 
         new_content = content.replace(old_text, new_text, 1)
         with open(file_path, mode="w", encoding="utf-8") as f:
             f.write(new_content)
         log.debug("edit_file 成功: %s", file_path)
-        return {"success": True, "file_path": file_path}
+        return EditResponse(success=True, file_path=file_path)
     except FileNotFoundError:
         log.warning("edit_file: 文件不存在 %s", file_path)
-        return {"success": False, "error": f"文件不存在: {file_path}"}
+        return EditResponse(success=False, error=f"文件不存在: {file_path}")
     except Exception as e:
         log.error("edit_file 异常: %s", e)
-        return {"success": False, "error": str(e)}
+        return EditResponse(success=False, error=str(e))
 
 
 class SearchFilesInput(BaseModel):
@@ -275,19 +279,18 @@ class SearchFilesInput(BaseModel):
 
 
 @tool("search_files", args_schema=SearchFilesInput)
-def search_files(pattern: str, directory: str = ".") -> dict:
+def search_files(pattern: str, directory: str = ".") -> SearchResponse:
     """使用 glob 模式搜索文件，返回匹配的文件路径列表"""
     log.info("search_files: pattern=%s directory=%s", pattern, directory)
     try:
         full_pattern = os.path.join(directory, pattern)
         matches = _glob.glob(full_pattern, recursive=True)
-        # 过滤掉 __pycache__ 和 .git 等目录
         matches = [m for m in matches if "__pycache__" not in m and ".git" not in m]
         log.debug("search_files 找到 %d 个文件", len(matches))
-        return {"success": True, "files": matches[:100], "total": len(matches)}
+        return SearchResponse(success=True, files=matches[:100], total=len(matches))
     except Exception as e:
         log.error("search_files 异常: %s", e)
-        return {"success": False, "error": str(e)}
+        return SearchResponse(success=False, error=str(e))
 
 
 # ============================================================
@@ -299,7 +302,7 @@ class GitStatusInput(BaseModel):
 
 
 @tool("git_status", args_schema=GitStatusInput)
-def git_status(path: Optional[str] = None) -> dict:
+def git_status(path: Optional[str] = None) -> GitStatusResponse:
     """显示 Git 工作区状态（已修改、已暂存、未跟踪的文件）"""
     log.info("git_status: path=%s", path)
     try:
@@ -308,13 +311,13 @@ def git_status(path: Optional[str] = None) -> dict:
             cmd.append(path)
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
         if result.returncode != 0:
-            return {"success": False, "error": result.stderr.strip() or "不在 Git 仓库中"}
+            return GitStatusResponse(success=False, error=result.stderr.strip() or "不在 Git 仓库中")
         output = result.stdout.strip()
-        return {"success": True, "status": output or "工作区干净，无变更"}
+        return GitStatusResponse(success=True, status=output or "工作区干净，无变更")
     except FileNotFoundError:
-        return {"success": False, "error": "git 未安装或不在 PATH 中"}
+        return GitStatusResponse(success=False, error="git 未安装或不在 PATH 中")
     except subprocess.TimeoutExpired:
-        return {"success": False, "error": "git status 执行超时"}
+        return GitStatusResponse(success=False, error="git status 执行超时")
 
 
 class GitDiffInput(BaseModel):
@@ -323,7 +326,7 @@ class GitDiffInput(BaseModel):
 
 
 @tool("git_diff", args_schema=GitDiffInput)
-def git_diff(file_path: Optional[str] = None, staged: bool = False) -> dict:
+def git_diff(file_path: Optional[str] = None, staged: bool = False) -> GitDiffResponse:
     """显示 Git 文件变更差异。可查看未暂存或已暂存的改动。"""
     log.info("git_diff: file_path=%s staged=%s", file_path, staged)
     try:
@@ -334,17 +337,17 @@ def git_diff(file_path: Optional[str] = None, staged: bool = False) -> dict:
             cmd.extend(["--", file_path])
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
         if result.returncode != 0:
-            return {"success": False, "error": result.stderr.strip()}
+            return GitDiffResponse(success=False, error=result.stderr.strip())
         output = result.stdout.strip()
         if not output:
             label = "已暂存" if staged else "未暂存"
-            return {"success": True, "diff": f"无{label}变更", "lines": 0}
+            return GitDiffResponse(success=True, diff=f"无{label}变更", lines=0)
         line_count = output.count("\n") + 1
-        return {"success": True, "diff": output, "lines": line_count}
+        return GitDiffResponse(success=True, diff=output, lines=line_count)
     except FileNotFoundError:
-        return {"success": False, "error": "git 未安装或不在 PATH 中"}
+        return GitDiffResponse(success=False, error="git 未安装或不在 PATH 中")
     except subprocess.TimeoutExpired:
-        return {"success": False, "error": "git diff 执行超时"}
+        return GitDiffResponse(success=False, error="git diff 执行超时")
 
 
 class GitLogInput(BaseModel):
@@ -353,7 +356,7 @@ class GitLogInput(BaseModel):
 
 
 @tool("git_log", args_schema=GitLogInput)
-def git_log(count: int = 10, file_path: Optional[str] = None) -> dict:
+def git_log(count: int = 10, file_path: Optional[str] = None) -> GitLogResponse:
     """显示 Git 提交历史。可限制数量和过滤特定文件。"""
     log.info("git_log: count=%d file_path=%s", count, file_path)
     try:
@@ -362,22 +365,22 @@ def git_log(count: int = 10, file_path: Optional[str] = None) -> dict:
             cmd.extend(["--", file_path])
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
         if result.returncode != 0:
-            return {"success": False, "error": result.stderr.strip()}
+            return GitLogResponse(success=False, error=result.stderr.strip())
         output = result.stdout.strip()
         if not output:
-            return {"success": True, "commits": [], "total": 0}
+            return GitLogResponse(success=True, commits=[], total=0)
         commits = []
         for line in output.split("\n"):
             parts = line.split(" ", 1)
             if len(parts) == 2:
-                commits.append({"hash": parts[0], "message": parts[1]})
+                commits.append(GitCommitInfo(hash=parts[0], message=parts[1]))
             else:
-                commits.append({"hash": parts[0], "message": ""})
-        return {"success": True, "commits": commits, "total": len(commits)}
+                commits.append(GitCommitInfo(hash=parts[0], message=""))
+        return GitLogResponse(success=True, commits=commits, total=len(commits))
     except FileNotFoundError:
-        return {"success": False, "error": "git 未安装或不在 PATH 中"}
+        return GitLogResponse(success=False, error="git 未安装或不在 PATH 中")
     except subprocess.TimeoutExpired:
-        return {"success": False, "error": "git log 执行超时"}
+        return GitLogResponse(success=False, error="git log 执行超时")
 
 
 class GitBlameInput(BaseModel):
@@ -387,7 +390,7 @@ class GitBlameInput(BaseModel):
 
 
 @tool("git_blame", args_schema=GitBlameInput)
-def git_blame(file_path: str, start_line: Optional[int] = None, end_line: Optional[int] = None) -> dict:
+def git_blame(file_path: str, start_line: Optional[int] = None, end_line: Optional[int] = None) -> GitBlameResponse:
     """显示文件每一行的最后修改者和提交信息，用于追溯代码变更历史。"""
     log.info("git_blame: file_path=%s lines=%s-%s", file_path, start_line, end_line)
     try:
@@ -399,8 +402,7 @@ def git_blame(file_path: str, start_line: Optional[int] = None, end_line: Option
         cmd.append(file_path)
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
         if result.returncode != 0:
-            return {"success": False, "error": result.stderr.strip()}
-        # 解析 porcelain 格式，提取作者和提交信息
+            return GitBlameResponse(success=False, error=result.stderr.strip())
         authors = {}
         current_commit = None
         for line in result.stdout.split("\n"):
@@ -410,17 +412,16 @@ def git_blame(file_path: str, start_line: Optional[int] = None, end_line: Option
                 authors.setdefault(current_commit, {})["summary"] = line[8:]
             elif len(line) >= 40 and line[:40].strip().isalnum():
                 current_commit = line[:40].strip()
-        # 去重，只保留唯一的作者-提交映射
         unique = {}
         for info in authors.values():
             key = f"{info.get('author', '?')}: {info.get('summary', '?')}"
             unique[key] = unique.get(key, 0) + 1
-        blame_entries = [{"reference": k, "lines": v} for k, v in sorted(unique.items(), key=lambda x: -x[1])]
-        return {"success": True, "file": file_path, "blame": blame_entries[:20]}
+        blame_entries = [GitBlameEntry(reference=k, lines=v) for k, v in sorted(unique.items(), key=lambda x: -x[1])]
+        return GitBlameResponse(success=True, file=file_path, blame=blame_entries[:20])
     except FileNotFoundError:
-        return {"success": False, "error": "git 未安装或不在 PATH 中"}
+        return GitBlameResponse(success=False, error="git 未安装或不在 PATH 中")
     except subprocess.TimeoutExpired:
-        return {"success": False, "error": "git blame 执行超时"}
+        return GitBlameResponse(success=False, error="git blame 执行超时")
 
 
 all_tools = [read_file, fetch_api, execute_shell, run_python, write_file, edit_file, search_files,
