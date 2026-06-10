@@ -1,4 +1,7 @@
-# Main entry point for the application
+"""LangCode AI Code Agent 入口
+
+基于 LangGraph 的多 Agent 协作系统，具备记忆、规划、上下文管理等能力。
+"""
 
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessageChunk
 from langgraph.checkpoint.memory import MemorySaver
@@ -29,36 +32,53 @@ from LangCode.agents.delegate_tools import create_delegate_tools
 
 log = get_logger("main")
 
-# 初始化记忆系统（工厂模式，通过闭包绑定 store/manager，无全局变量）
-memory_store = SQLiteMemoryStore(db_path=".langcode/memory.db")
-memory_manager = MemoryManager(store=memory_store, llm=llm)
-memory_save, memory_search, memory_list = create_memory_tools(memory_store, memory_manager)
 
-# 初始化子 Agent
-lc_checkpoint_sub = MemorySaver()
-research_tools = [t for t in all_tools if t.name in ("read_file", "search_files", "fetch_api")] + [memory_search]
-review_tools = [t for t in all_tools if t.name in ("read_file", "search_files", "run_python", "execute_shell")]
-sub_agents = {
-    "code": CodeAgent(llm=llm, checkpoint=lc_checkpoint_sub, tools=all_tools),
-    "research": ResearchAgent(llm=llm, checkpoint=lc_checkpoint_sub, tools=research_tools),
-    "review": ReviewAgent(llm=llm, checkpoint=lc_checkpoint_sub, tools=review_tools),
-}
+def create_agent():
+    """创建完整的 Agent 及其所有子系统。返回 (graph, config, agent_prompt, platform_prompt)"""
+    # 记忆系统
+    memory_store = SQLiteMemoryStore(db_path=".langcode/memory.db")
+    memory_manager = MemoryManager(store=memory_store, llm=llm)
+    memory_save, memory_search, memory_list = create_memory_tools(memory_store, memory_manager)
 
-# 委托工具（工厂模式，通过参数注入 agents，无全局变量）
-delegate_tools = create_delegate_tools(sub_agents)
+    # 子 Agent
+    lc_checkpoint_sub = MemorySaver()
+    research_tools = [t for t in all_tools if t.name in ("read_file", "search_files", "fetch_api")] + [memory_search]
+    review_tools = [t for t in all_tools if t.name in ("read_file", "search_files", "run_python", "execute_shell")]
+    sub_agents = {
+        "code": CodeAgent(llm=llm, checkpoint=lc_checkpoint_sub, tools=all_tools),
+        "research": ResearchAgent(llm=llm, checkpoint=lc_checkpoint_sub, tools=research_tools),
+        "review": ReviewAgent(llm=llm, checkpoint=lc_checkpoint_sub, tools=review_tools),
+    }
 
-# MCP 工具（从 .langcode/mcp.json 加载，可选）
-mcp_manager = MCPManager()
-mcp_status = mcp_manager.connect_all()
-if mcp_status["connected"] > 0:
-    log.info("MCP: %d 个服务器已连接", mcp_status["connected"])
-mcp_tools = mcp_manager.create_langchain_tools()
+    delegate_tools = create_delegate_tools(sub_agents)
 
-# 合并所有工具（原有 + AST + MCP + 记忆 + 规划 + 委托）
-all_tools_full = all_tools + ast_tools + mcp_tools + [memory_save, memory_search, memory_list, plan_create, plan_show] + delegate_tools
+    # MCP 工具（可选，从 .langcode/mcp.json 加载）
+    mcp_manager = MCPManager()
+    mcp_status = mcp_manager.connect_all()
+    if mcp_status["connected"] > 0:
+        log.info("MCP: %d/%d 服务器已连接", mcp_status["connected"], mcp_status["total"])
+    mcp_tools = mcp_manager.create_langchain_tools()
+
+    # 合并所有工具
+    all_tools_full = (
+        all_tools + ast_tools + mcp_tools +
+        [memory_save, memory_search, memory_list, plan_create, plan_show] +
+        delegate_tools
+    )
+
+    # Supervisor Agent
+    lc_checkpoint = MemorySaver()
+    lc_agent = SupervisorAgent(llm=llm, sys_checkpoint=lc_checkpoint, sys_tools=all_tools_full)
+    lc_graph = lc_agent.get_graph()
+    lc_agent_prompt = lc_agent.get_agent_prompt()
+
+    config = {"configurable": {"thread_id": "test_001"}}
+    platform_prompt = get_platform_prompt()
+
+    return lc_graph, config, lc_agent_prompt, platform_prompt, memory_store, memory_manager
 
 
-def deal_command(graph, config: dict, user_input: str) -> bool:
+def deal_command(graph, config: dict, user_input: str, memory_store) -> bool:
     """处理命令，返回 True 表示已处理"""
     if user_input == COMMAND_MEMORY:
         records = memory_store.list_all()
@@ -73,57 +93,42 @@ def deal_command(graph, config: dict, user_input: str) -> bool:
     return False
 
 
-def run_conversation(
-    graph,
-    config,
-    platform_prompt: str = None,
-    agent_prompt: str = None
-):
-    """
-    platform_prompt: 平台级 prompt，整个会话只注入一次
-    agent_prompt:    agent 级 prompt，切换 agent 时可以替换
-    """
+def run_conversation(graph, config, platform_prompt=None, agent_prompt=None,
+                     memory_store=None, memory_manager=None):
+    """运行交互式对话循环"""
     log.info("run_conversation 启动, config=%s", config)
     current_state = graph.get_state(config)
     is_new_session = len(current_state.values.get("messages", [])) == 0
     log.debug("新会话: %s, 消息数: %d", is_new_session, len(current_state.values.get("messages", [])))
 
-    # 只在全新会话注入平台 prompt
+    # 全新会话注入平台 prompt
     init_messages = []
     if is_new_session and platform_prompt:
-        init_messages.append(
-            SystemMessage(id="platform", content=platform_prompt)
-        )
+        init_messages.append(SystemMessage(id="platform", content=platform_prompt))
 
-    # agent prompt 每次都可以传入（替换上一个 agent 的 prompt）
     if agent_prompt:
-        init_messages.append(
-            SystemMessage(id="agent_role", content=agent_prompt)
-        )
+        init_messages.append(SystemMessage(id="agent_role", content=agent_prompt))
 
     if init_messages:
         log.debug("注入 %d 条系统消息", len(init_messages))
-        # 只注入配置，不触发 agent 实际执行
         graph.update_state(config, {"messages": init_messages})
 
-    # 主对话循环
     while True:
         user_input = input("\n>: ").strip()
         if user_input.lower() == COMMAND_EXIT:
             log.info("用户退出对话")
-            # 退出前自动提取记忆
-            current_state = graph.get_state(config)
-            messages = current_state.values.get("messages", [])
-            if messages and memory_manager:
-                saved = memory_manager.auto_save(messages)
-                if saved:
-                    print(f"已自动保存 {len(saved)} 条记忆。")
+            if memory_manager:
+                current_state = graph.get_state(config)
+                messages = current_state.values.get("messages", [])
+                if messages:
+                    saved = memory_manager.auto_save(messages)
+                    if saved:
+                        print(f"已自动保存 {len(saved)} 条记忆。")
             print("对话结束。")
             break
 
-        # 处理命令
         if user_input.startswith("/"):
-            if deal_command(graph, config, user_input):
+            if deal_command(graph, config, user_input, memory_store):
                 continue
 
         # 检索相关记忆并注入
@@ -132,10 +137,7 @@ def run_conversation(
             memory_context = memory_manager.get_context(user_input)
             if memory_context:
                 log.debug("注入记忆上下文: %d 字符", len(memory_context))
-
-        # 将记忆上下文写入 state
-        if memory_context:
-            graph.update_state(config, {"memory_context": memory_context})
+                graph.update_state(config, {"memory_context": memory_context})
 
         log.info("用户输入: %s", user_input[:200])
         events = graph.stream(
@@ -143,7 +145,6 @@ def run_conversation(
             config,
             stream_mode=["messages", "updates"],
         )
-
         _consume_events(graph, events, config)
 
 
@@ -157,18 +158,15 @@ def _consume_events(graph, events, config):
         for mode, data in events:
             if mode == "messages":
                 chunk, _metadata = data
-                if isinstance(chunk, AIMessageChunk):
-                    if chunk.content:
-                        print(chunk.content, end="", flush=True)
+                if isinstance(chunk, AIMessageChunk) and chunk.content:
+                    print(chunk.content, end="", flush=True)
 
             elif mode == "updates":
                 log.debug("收到 updates: %s", list(data.keys()))
 
-                # agent 节点完成：打印完整的工具调用请求（此时 args 已齐全）
                 if "agent" in data:
                     agent_msg = data["agent"].get("messages")
                     if agent_msg:
-                        # updates 里可能是 list 或单条
                         msgs = agent_msg if isinstance(agent_msg, list) else [agent_msg]
                         for msg in msgs:
                             for tc in getattr(msg, "tool_calls", []) or []:
@@ -176,7 +174,6 @@ def _consume_events(graph, events, config):
                                 print(f"\n[工具调用] {tc['name']}({args_preview})", flush=True)
                                 log.info("工具调用: %s args=%s", tc["name"], args_preview)
 
-                # tools 节点完成：打印结果摘要
                 if "tools" in data:
                     for msg in data["tools"].get("messages", []):
                         tool_name = getattr(msg, "name", "unknown")
@@ -185,7 +182,6 @@ def _consume_events(graph, events, config):
                         print(f"\n[工具结果] {tool_name}: {preview}", flush=True)
                         log.debug("工具结果: %s -> %s", tool_name, preview[:200])
 
-                # human-in-the-loop 中断
                 if "__interrupt__" in data:
                     interrupt_info = data["__interrupt__"]
                     log.info("触发中断: %s", interrupt_info[0].value)
@@ -207,17 +203,9 @@ def _consume_events(graph, events, config):
 
 if __name__ == "__main__":
     log.info("=== LangCode Agent 启动 ===")
-    config = {
-        "configurable": {
-            "thread_id": "test_001"
-        }}
-
-    lc_checkpoint = MemorySaver()
-
-    lc_agent = SupervisorAgent(llm=llm, sys_checkpoint=lc_checkpoint, sys_tools=all_tools_full)
-    lc_graph = lc_agent.get_graph()
-    lc_agent_prompt = lc_agent.get_agent_prompt()
-
-    platform_prompt = get_platform_prompt()
-
-    run_conversation(lc_graph, config, platform_prompt=platform_prompt, agent_prompt=lc_agent_prompt)
+    lc_graph, config, agent_prompt, platform_prompt, memory_store, memory_manager = create_agent()
+    run_conversation(lc_graph, config,
+                     platform_prompt=platform_prompt,
+                     agent_prompt=agent_prompt,
+                     memory_store=memory_store,
+                     memory_manager=memory_manager)
