@@ -15,6 +15,7 @@ from langgraph.types import Checkpointer
 
 from LangCode.shared.state import LCState
 from LangCode.shared.routing import should_use_tools
+from LangCode.shared.context import trim_messages, summarize_old_messages
 from LangCode.shared.logger import get_logger
 from LangCode.agents.supervisor.prompts import *
 from LangCode.planning.schema import Plan
@@ -43,6 +44,10 @@ def _call_llm(state: LCState, llm: ChatOpenAI) -> dict:
             content="[系统提示] 工具调用已连续失败多次，请直接基于已有信息回复用户。",
             tool_call_id="system_retry_limit"
         ))
+
+    # 上下文窗口管理：裁剪 + 摘要
+    messages = trim_messages(messages)
+    messages = summarize_old_messages(messages, llm)
 
     # 注入记忆上下文
     memory_context = state.get("memory_context", "")
