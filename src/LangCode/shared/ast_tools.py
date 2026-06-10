@@ -1,9 +1,18 @@
 """AST 结构化编辑工具：LangChain 工具包装器"""
 
-from langchain.tools import tool
-from pydantic import BaseModel, Field
 from typing import Optional
 
+from langchain.tools import tool
+from pydantic import BaseModel, Field
+
+from LangCode.shared.ast_editor import (
+    ast_info as _ast_info,
+    ast_find as _ast_find,
+    ast_rename as _ast_rename,
+    ast_add_param as _ast_add_param,
+    ast_add_method as _ast_add_method,
+    ast_add_import as _ast_add_import,
+)
 from LangCode.shared.logger import get_logger
 
 log = get_logger("ast_tools")
@@ -17,7 +26,6 @@ class AstInfoInput(BaseModel):
 def ast_info(file_path: str) -> dict:
     """分析 Python 文件的 AST 结构，返回函数、类、import 等信息。
     用于理解代码结构，比 read_file 更适合了解代码组织。"""
-    from LangCode.shared.ast_editor import ast_info as _ast_info
     return _ast_info(file_path)
 
 
@@ -30,7 +38,6 @@ class AstFindInput(BaseModel):
 @tool("ast_find", args_schema=AstFindInput)
 def ast_find(file_path: str, target_type: str, name: str) -> dict:
     """在 Python 文件中查找指定的代码元素（函数、类、方法、变量），返回精确的行号和上下文。"""
-    from LangCode.shared.ast_editor import ast_find as _ast_find
     return _ast_find(file_path, target_type, name)
 
 
@@ -45,14 +52,7 @@ class AstRenameInput(BaseModel):
 def ast_rename(file_path: str, old_name: str, new_name: str, scope: str = "all") -> dict:
     """AST 级别重命名：在 Python 文件中安全地重命名函数名、类名、变量名。
     比字符串替换更安全，只修改同作用域内的同名标识符。"""
-    from LangCode.shared.ast_editor import ast_rename as _ast_rename
-    result = _ast_rename(file_path, old_name, new_name, scope)
-    return {
-        "success": result.success,
-        "message": result.message,
-        "changes": result.changes,
-        "error": result.error,
-    }
+    return _ast_rename(file_path, old_name, new_name, scope).to_dict()
 
 
 class AstAddParamInput(BaseModel):
@@ -67,14 +67,7 @@ class AstAddParamInput(BaseModel):
 def ast_add_param(file_path: str, func_name: str, param_name: str,
                   default_value: Optional[str] = None, position: int = -1) -> dict:
     """AST 级别操作：为 Python 函数添加参数。自动处理 self/cls 位置和默认值语法。"""
-    from LangCode.shared.ast_editor import ast_add_param as _ast_add_param
-    result = _ast_add_param(file_path, func_name, param_name, default_value, position)
-    return {
-        "success": result.success,
-        "message": result.message,
-        "changes": result.changes,
-        "error": result.error,
-    }
+    return _ast_add_param(file_path, func_name, param_name, default_value, position).to_dict()
 
 
 class AstAddMethodInput(BaseModel):
@@ -88,14 +81,7 @@ class AstAddMethodInput(BaseModel):
 def ast_add_method(file_path: str, class_name: str, method_code: str,
                    position: int = -1) -> dict:
     """AST 级别操作：在 Python 类中添加方法。自动处理缩进。"""
-    from LangCode.shared.ast_editor import ast_add_method as _ast_add_method
-    result = _ast_add_method(file_path, class_name, method_code, position)
-    return {
-        "success": result.success,
-        "message": result.message,
-        "changes": result.changes,
-        "error": result.error,
-    }
+    return _ast_add_method(file_path, class_name, method_code, position).to_dict()
 
 
 class AstAddImportInput(BaseModel):
@@ -106,14 +92,7 @@ class AstAddImportInput(BaseModel):
 @tool("ast_add_import", args_schema=AstAddImportInput)
 def ast_add_import(file_path: str, import_statement: str) -> dict:
     """AST 级别操作：在 Python 文件顶部添加 import 语句。自动放在现有 import 之后，避免重复。"""
-    from LangCode.shared.ast_editor import ast_add_import as _ast_add_import
-    result = _ast_add_import(file_path, import_statement)
-    return {
-        "success": result.success,
-        "message": result.message,
-        "changes": result.changes,
-        "error": result.error,
-    }
+    return _ast_add_import(file_path, import_statement).to_dict()
 
 
 # 所有 AST 工具

@@ -48,6 +48,14 @@ class EditResult:
     changes: list[str] = field(default_factory=list)
     error: Optional[str] = None
 
+    def to_dict(self) -> dict:
+        return {
+            "success": self.success,
+            "message": self.message,
+            "changes": self.changes,
+            "error": self.error,
+        }
+
 
 def _parse_file(file_path: str) -> tuple[bytes, Node]:
     """解析文件，返回 (源码字节, 根节点)"""
@@ -56,6 +64,16 @@ def _parse_file(file_path: str) -> tuple[bytes, Node]:
     source_bytes = source.encode("utf-8")
     tree = _parser.parse(source_bytes)
     return source_bytes, tree.root_node
+
+
+def _find_assignments(node: Node) -> list[Node]:
+    """递归查找赋值节点（模块级函数，避免每次调用 ast_find 重复定义）"""
+    found = []
+    if node.type == "assignment":
+        found.append(node)
+    for child in node.children:
+        found.extend(_find_assignments(child))
+    return found
 
 
 def _find_nodes(root: Node, node_type: str, name: Optional[str] = None) -> list[Node]:
@@ -225,16 +243,7 @@ def ast_find(file_path: str, target_type: str, name: str) -> dict:
                         "text_preview": method_node.text.decode()[:300],
                     })
     elif target_type == "variable":
-        # 查找赋值语句中的变量（可能嵌套在 expression_statement 中）
-        def _find_assignments(node):
-            """递归查找赋值节点"""
-            found = []
-            if node.type == "assignment":
-                found.append(node)
-            for child in node.children:
-                found.extend(_find_assignments(child))
-            return found
-
+        # 查找赋值语句中的变量
         for assign_node in _find_assignments(root):
             left = assign_node.child_by_field_name("left")
             if left and left.type == "identifier" and left.text.decode() == name:
@@ -417,9 +426,8 @@ def ast_add_method(file_path: str, class_name: str, method_code: str,
 
     # 确定插入行
     if position == -1:
-        # 插入到最后一个方法之后、类体结束之前
-        last_line = body.end_point[0]  # body 的结束行
-        insert_line = last_line
+        # 插入到最后一个方法之后、类体结束之后
+        insert_line = body.end_point[0] + 2  # end_point[0] 为 0-based，+2 = 后一行 (1-based)
     else:
         # 插入到第一个方法之后
         insert_line = body.start_point[0] + 2  # body 开始后的第二行
