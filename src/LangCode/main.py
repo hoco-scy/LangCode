@@ -7,12 +7,16 @@
     python main.py --tui     # TUI 终端界面模式
 """
 
+import os
+import sqlite3
+from pathlib import Path
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessageChunk
-from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
 from LangCode.agents.supervisor import SupervisorAgent
-from LangCode.shared import llm, all_tools, ast_tools, MCPManager, get_logger
+from LangCode.shared import llm, all_tools, ast_tools, MCPManager, SessionStore, get_logger
+from LangCode.shared.session import SessionRecord
 from LangCode.shared.command import COMMAND_EXIT, COMMAND_MEMORY
 from LangCode.shared.prompts import get_platform_prompt
 
@@ -32,16 +36,46 @@ from LangCode.agents.delegate_tools import create_delegate_tools
 
 log = get_logger("main")
 
+# checkpoint 持久化路径
+_CHECKPOINT_DB = str(Path.home() / ".langcode" / "checkpoints.db")
+# 当前会话 ID 容器，delegate 工具通过此闭包获取 session-scoped thread_id
+_session_box = {"id": None}
+
+
+def _ensure_checkpoint_schema(conn):
+    """检测并修复 checkpoint 表 schema（兼容旧版 langgraph-checkpoint-sqlite）"""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(checkpoints)").fetchall()}
+    if "type" in cols:
+        return  # schema 已是新版，无需处理
+    log.warning("检测到旧版 checkpoint schema，重建表")
+    conn.executescript("""
+        DROP TABLE IF EXISTS checkpoints;
+        DROP TABLE IF EXISTS writes;
+        DROP TABLE IF EXISTS blobs;
+    """)
+    conn.commit()
+    SqliteSaver(conn).setup()
+
 
 def create_agent():
-    """创建完整的 Agent 及其所有子系统。返回 (graph, config, agent_prompt, platform_prompt, memory_store, memory_manager, mcp_manager)"""
+    """创建完整的 Agent 及其所有子系统。
+
+    返回 (graph, config, agent_prompt, platform_prompt,
+           memory_store, memory_manager, mcp_manager,
+           session_store, current_session)
+    """
     # 记忆系统
-    memory_store = SQLiteMemoryStore(db_path=".langcode/memory.db")
+    memory_store = SQLiteMemoryStore()
     memory_manager = MemoryManager(store=memory_store, llm=llm)
     memory_save, memory_search, memory_list = create_memory_tools(memory_store, memory_manager)
 
-    # 子 Agent
-    lc_checkpoint_sub = MemorySaver()
+    # checkpoint 持久化（所有 Agent 共享同一个 SqliteSaver）
+    ckpt_conn = sqlite3.connect(_CHECKPOINT_DB, check_same_thread=False)
+    checkpointer = SqliteSaver(ckpt_conn)
+    checkpointer.setup()
+    _ensure_checkpoint_schema(ckpt_conn)
+
+    # 子 Agent（checkpoint 由 delegate_tools 动态传入 session-scoped thread_id）
     research_tools = [t for t in all_tools if t.name in (
         "read_file", "search_files", "fetch_api", "git_log", "git_blame"
     )] + [memory_search]
@@ -49,14 +83,14 @@ def create_agent():
         "read_file", "search_files", "run_python", "execute_shell", "git_log", "git_blame"
     )]
     sub_agents = {
-        "code": CodeAgent(llm=llm, checkpoint=lc_checkpoint_sub, tools=all_tools),
-        "research": ResearchAgent(llm=llm, checkpoint=lc_checkpoint_sub, tools=research_tools),
-        "review": ReviewAgent(llm=llm, checkpoint=lc_checkpoint_sub, tools=review_tools),
+        "code": CodeAgent(llm=llm, checkpoint=checkpointer, tools=all_tools),
+        "research": ResearchAgent(llm=llm, checkpoint=checkpointer, tools=research_tools),
+        "review": ReviewAgent(llm=llm, checkpoint=checkpointer, tools=review_tools),
     }
 
-    delegate_tools = create_delegate_tools(sub_agents)
+    delegate_tools = create_delegate_tools(sub_agents, lambda: _session_box["id"])
 
-    # MCP 工具（可选，从 .langcode/mcp.json 加载）
+    # MCP 工具（可选，从 ~/.langcode/mcp.json 加载）
     mcp_manager = MCPManager()
     mcp_status = mcp_manager.connect_all()
     if mcp_status["connected"] > 0:
@@ -71,19 +105,32 @@ def create_agent():
     )
 
     # Supervisor Agent
-    lc_checkpoint = MemorySaver()
-    lc_agent = SupervisorAgent(llm=llm, sys_checkpoint=lc_checkpoint, sys_tools=all_tools_full)
+    lc_agent = SupervisorAgent(llm=llm, sys_checkpoint=checkpointer, sys_tools=all_tools_full)
     lc_graph = lc_agent.get_graph()
     lc_agent_prompt = lc_agent.get_agent_prompt()
 
-    config = {"configurable": {"thread_id": "test_001"}}
+    # 会话管理
+    session_store = SessionStore()
+    workspace = os.getcwd()
+    session_id = __import__("uuid").uuid4().hex[:12]
+    _session_box["id"] = session_id
+    current_session = SessionRecord(id=session_id, workspace=workspace)
+
+    config = {"configurable": {"thread_id": session_id}}
     platform_prompt = get_platform_prompt()
 
-    return lc_graph, config, lc_agent_prompt, platform_prompt, memory_store, memory_manager, mcp_manager
+    return (lc_graph, config, lc_agent_prompt, platform_prompt,
+            memory_store, memory_manager, mcp_manager,
+            session_store, current_session)
 
 
-def deal_command(graph, config: dict, user_input: str, memory_store) -> bool:
-    """处理命令，返回 True 表示已处理"""
+def deal_command(graph, config: dict, user_input: str,
+                 memory_store, session_store, current_session,
+                 workspace: str):
+    """处理命令，返回 (handled, current_session, config)"""
+    import uuid as _uuid
+
+    # /memory 命令
     if user_input == COMMAND_MEMORY:
         records = memory_store.list_all()
         if not records:
@@ -93,39 +140,90 @@ def deal_command(graph, config: dict, user_input: str, memory_store) -> bool:
             for r in records:
                 tags = f" [{', '.join(r.tags)}]" if r.tags else ""
                 print(f"  [{r.memory_type}]{tags} {r.content[:80]}")
-        return True
-    return False
+        return True, current_session, config
+
+    # /session 命令
+    if user_input == "/session":
+        state = graph.get_state(config)
+        msg_count = len(state.values.get("messages", []))
+        plan = state.values.get("current_plan")
+        plan_info = f", 计划进行中 (步骤 {state.values.get('plan_step_index', 0) + 1})" if plan else ""
+        print(f"当前会话: {current_session.id}  ({msg_count} 条消息{plan_info})")
+        return True, current_session, config
+
+    if user_input == "/session list":
+        sessions = session_store.list_sessions(workspace)
+        if not sessions:
+            print("该工作区暂无历史会话。")
+        else:
+            print(f"工作区 {workspace} 的历史会话：")
+            for s in sessions:
+                marker = " ←" if s.id == current_session.id else ""
+                print(f"  {s.id}  {s.title[:40]}  ({s.updated_at[:19]}){marker}")
+        return True, current_session, config
+
+    if user_input == "/session new":
+        _sync_title(graph, config, session_store, current_session)
+        session_id = _uuid.uuid4().hex[:12]
+        _session_box["id"] = session_id
+        current_session = SessionRecord(id=session_id, workspace=workspace)
+        config = {"configurable": {"thread_id": session_id}}
+        print(f"已创建新会话: {session_id}")
+        return True, current_session, config
+
+    if user_input.startswith("/session "):
+        target_id = user_input[len("/session "):].strip()
+        record = session_store.get(target_id, workspace)
+        if not record:
+            print(f"未找到会话: {target_id}")
+            return True, current_session, config
+        _sync_title(graph, config, session_store, current_session)
+        current_session = record
+        _session_box["id"] = record.id
+        config = {"configurable": {"thread_id": record.id}}
+        state = graph.get_state(config)
+        msg_count = len(state.values.get("messages", []))
+        print(f"已切换到会话: {record.id}  {record.title[:40]}  ({msg_count} 条消息)")
+        return True, current_session, config
+
+    return False, current_session, config
 
 
 def run_conversation(graph, config, platform_prompt=None, agent_prompt=None,
-                     memory_store=None, memory_manager=None):
+                     memory_store=None, memory_manager=None,
+                     session_store=None, current_session=None):
     """运行交互式对话循环"""
-    log.info("run_conversation 启动, config=%s", config)
+    workspace = os.getcwd()
+    log.info("run_conversation 启动, session=%s", current_session.id)
+
     current_state = graph.get_state(config)
     is_new_session = len(current_state.values.get("messages", [])) == 0
-    log.debug("新会话: %s, 消息数: %d", is_new_session, len(current_state.values.get("messages", [])))
 
     # 全新会话注入平台 prompt
-    init_messages = []
-    if is_new_session and platform_prompt:
-        init_messages.append(SystemMessage(id="platform", content=platform_prompt))
-
-    if agent_prompt:
-        init_messages.append(SystemMessage(id="agent_role", content=agent_prompt))
-
-    if init_messages:
-        log.debug("注入 %d 条系统消息", len(init_messages))
-        graph.update_state(config, {"messages": init_messages})
+    if is_new_session:
+        init_messages = []
+        if platform_prompt:
+            init_messages.append(SystemMessage(id="platform", content=platform_prompt))
+        if agent_prompt:
+            init_messages.append(SystemMessage(id="agent_role", content=agent_prompt))
+        if init_messages:
+            graph.update_state(config, {"messages": init_messages})
+        session_store.save(current_session)
 
     while True:
         user_input = input("\n>: ").strip()
         if user_input.lower() == COMMAND_EXIT:
             log.info("用户退出对话")
+            _sync_title(graph, config, session_store, current_session)
             print("对话结束。")
             break
 
         if user_input.startswith("/"):
-            if deal_command(graph, config, user_input, memory_store):
+            handled, current_session, config = deal_command(
+                graph, config, user_input, memory_store,
+                session_store, current_session, workspace,
+            )
+            if handled:
                 continue
 
         # 检索相关记忆并注入
@@ -143,6 +241,17 @@ def run_conversation(graph, config, platform_prompt=None, agent_prompt=None,
             stream_mode=["messages", "updates"],
         )
         _consume_events(graph, events, config)
+
+
+def _sync_title(graph, config, session_store, current_session):
+    """从 checkpoint 提取第一条用户消息作为会话标题，更新到 SessionStore"""
+    messages = graph.get_state(config).values.get("messages", [])
+    for m in messages:
+        if m.type == "human" and m.content:
+            current_session.title = str(m.content)[:60]
+            break
+    session_store.save(current_session)
+    log.debug("会话元数据已同步: %s title=%s", current_session.id, current_session.title)
 
 
 def _consume_events(graph, events, config):
@@ -205,7 +314,9 @@ if __name__ == "__main__":
     if "--tui" in sys.argv: # 暂时处于不可用状态
         from LangCode.tui import run_tui
         log.info("=== LangCode Agent 启动 (TUI 模式) ===")
-        lc_graph, config, agent_prompt, platform_prompt, memory_store, memory_manager, mcp_manager = create_agent()
+        lc_graph, config, agent_prompt, platform_prompt, \
+            memory_store, memory_manager, mcp_manager, \
+            session_store, current_session = create_agent()
         atexit.register(mcp_manager.disconnect_all)
         run_tui(lc_graph, config,
                 platform_prompt=platform_prompt,
@@ -214,10 +325,14 @@ if __name__ == "__main__":
                 memory_manager=memory_manager)
     else:
         log.info("=== LangCode Agent 启动 ===")
-        lc_graph, config, agent_prompt, platform_prompt, memory_store, memory_manager, mcp_manager = create_agent()
+        lc_graph, config, agent_prompt, platform_prompt, \
+            memory_store, memory_manager, mcp_manager, \
+            session_store, current_session = create_agent()
         atexit.register(mcp_manager.disconnect_all)
         run_conversation(lc_graph, config,
                          platform_prompt=platform_prompt,
                          agent_prompt=agent_prompt,
                          memory_store=memory_store,
-                         memory_manager=memory_manager)
+                         memory_manager=memory_manager,
+                         session_store=session_store,
+                         current_session=current_session)

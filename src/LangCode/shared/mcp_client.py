@@ -24,6 +24,7 @@
 import json
 import os
 import asyncio
+from pathlib import Path
 from typing import Optional, Any
 
 from langchain.tools import tool
@@ -34,7 +35,7 @@ from LangCode.shared.logger import get_logger
 log = get_logger("mcp_client")
 
 # MCP 配置文件路径
-MCP_CONFIG_PATH = ".langcode/mcp.json"
+MCP_CONFIG_PATH = str(Path.home() / ".langcode" / "mcp.json")
 
 
 def load_mcp_config(config_path: str = MCP_CONFIG_PATH) -> dict:

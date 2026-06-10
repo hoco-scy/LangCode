@@ -27,7 +27,7 @@ class MemoryRecord(BaseModel):
 class SQLiteMemoryStore:
     """SQLite + FTS5 持久化记忆存储，支持全文搜索"""
 
-    def __init__(self, db_path: str = ".langcode/memory.db"):
+    def __init__(self, db_path: str = str(Path.home() / ".langcode" / "memory.db")):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)

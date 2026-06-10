@@ -13,6 +13,13 @@ def memory_store():
 
 
 @pytest.fixture
+def session_store():
+    """内存 SQLite 会话索引存储"""
+    from LangCode.shared.session import SessionStore
+    return SessionStore(db_path=":memory:")
+
+
+@pytest.fixture
 def mock_llm():
     """模拟 LLM"""
     return MagicMock()

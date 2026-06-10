@@ -7,18 +7,18 @@ from LangCode.agents.delegate_tools import create_delegate_tools, _make_delegate
 
 class TestCreateDelegateTools:
     def test_returns_three_tools(self):
-        tools = create_delegate_tools({})
+        tools = create_delegate_tools({}, lambda: "test_session")
         assert len(tools) == 3
 
     def test_tool_names(self):
-        tools = create_delegate_tools({})
+        tools = create_delegate_tools({}, lambda: "test_session")
         names = {t.name for t in tools}
         assert names == {"delegate_to_code", "delegate_to_research", "delegate_to_review"}
 
 
 class TestDelegateToolBehavior:
     def test_agent_not_registered(self):
-        tool_fn = _make_delegate_tool("code", "代码工程师", agents={})
+        tool_fn = _make_delegate_tool("code", "代码工程师", agents={}, get_session_id=lambda: "test_session")
         result = tool_fn.invoke({"task": "写个函数"})
         assert result["success"] is False
         assert "未注册" in result["error"]
@@ -34,7 +34,7 @@ class TestDelegateToolBehavior:
             ("updates", {"agent": {"messages": [MagicMock(content="已完成代码编写")]}})
         ])
 
-        tool_fn = _make_delegate_tool("code", "代码工程师", agents={"code": mock_agent})
+        tool_fn = _make_delegate_tool("code", "代码工程师", agents={"code": mock_agent}, get_session_id=lambda: "test_session")
         result = tool_fn.invoke({"task": "写一个 hello world"})
         assert result["success"] is True
         assert result["agent"] == "code"
@@ -48,7 +48,7 @@ class TestDelegateToolBehavior:
         mock_graph.update_state = MagicMock()
         mock_graph.stream.side_effect = RuntimeError("执行失败")
 
-        tool_fn = _make_delegate_tool("code", "代码工程师", agents={"code": mock_agent})
+        tool_fn = _make_delegate_tool("code", "代码工程师", agents={"code": mock_agent}, get_session_id=lambda: "test_session")
         result = tool_fn.invoke({"task": "写代码"})
         assert result["success"] is False
         assert "执行失败" in result["error"]

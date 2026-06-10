@@ -14,8 +14,12 @@ class DelegateInput(BaseModel):
     context: str = Field(default="", description="额外的上下文信息")
 
 
-def _make_delegate_tool(agent_name: str, agent_desc: str, agents: dict):
-    """动态创建委托工具，通过参数注入 agents 而非全局变量"""
+def _make_delegate_tool(agent_name: str, agent_desc: str, agents: dict, get_session_id):
+    """动态创建委托工具，通过参数注入 agents 而非全局变量。
+
+    Args:
+        get_session_id: 无参 callable，返回当前会话 ID，用于构造 session-scoped 子 Agent thread_id。
+    """
 
     tool_name = f"delegate_to_{agent_name}"
     tool_description = f"将任务委派给{agent_desc}执行。适用于需要{agent_desc}的场景。"
@@ -31,8 +35,9 @@ def _make_delegate_tool(agent_name: str, agent_desc: str, agents: dict):
 
         try:
             sub_graph = agent.get_graph()
-            # 固定 thread_id 使子 Agent 在多次委派间保持对话记忆
-            sub_config = {"configurable": {"thread_id": f"sub_{agent_name}"}}
+            # session-scoped thread_id：同一会话内子 Agent 保持记忆，不同会话隔离
+            sid = get_session_id()
+            sub_config = {"configurable": {"thread_id": f"sub_{sid}_{agent_name}"}}
 
             # 注入系统提示
             system_prompt = agent.get_system_prompt()
@@ -95,14 +100,15 @@ def _make_delegate_tool(agent_name: str, agent_desc: str, agents: dict):
     return delegate
 
 
-def create_delegate_tools(agents: dict) -> list:
+def create_delegate_tools(agents: dict, get_session_id) -> list:
     """创建所有委托工具
 
     Args:
         agents: {"code": CodeAgent, "research": ResearchAgent, "review": ReviewAgent}
+        get_session_id: 无参 callable，返回当前会话 ID
     """
     return [
-        _make_delegate_tool("code", "代码工程师：编写、修改、调试代码", agents),
-        _make_delegate_tool("research", "代码研究员：搜索、阅读、分析代码库", agents),
-        _make_delegate_tool("review", "代码审查员：审查代码质量、安全性", agents),
+        _make_delegate_tool("code", "代码工程师：编写、修改、调试代码", agents, get_session_id),
+        _make_delegate_tool("research", "代码研究员：搜索、阅读、分析代码库", agents, get_session_id),
+        _make_delegate_tool("review", "代码审查员：审查代码质量、安全性", agents, get_session_id),
     ]

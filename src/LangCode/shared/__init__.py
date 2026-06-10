@@ -36,6 +36,7 @@ from LangCode.shared.context import (
 )
 from LangCode.shared.routing import should_use_tools
 from LangCode.shared.mcp_client import MCPManager, MCPServerConnection
+from LangCode.shared.session import SessionStore
 
 __all__ = [
     # state
@@ -64,4 +65,6 @@ __all__ = [
     "should_use_tools",
     # mcp
     "MCPManager", "MCPServerConnection",
+    # session
+    "SessionStore",
 ]
