@@ -25,10 +25,14 @@ MAX_SUPERVISOR_ITERATIONS = 10
 
 class SupervisorDecision(BaseModel):
     """Supervisor 路由决策的 structured output schema"""
+    model_config = {"populate_by_name": True}
+
     route: Literal["react", "plan", "code", "research", "review"] = Field(
         description="下一步路由：react=普通对话+工具, plan=规划复杂任务, code/research/review=委派给子Agent"
     )
     reasoning: str = Field(
+        default="",
+        alias="reason",
         description="路由决策的理由"
     )
     task: str = Field(
@@ -157,7 +161,7 @@ def supervisor_node(state: LCState, llm: ChatOpenAI) -> dict:
         return updates
 
     except Exception as e:
-        log.error("supervisor 路由决策失败: %s, 默认 react", e)
+        log.warning("supervisor 路由决策失败（fallback react）: %s", e)
         return {
             "route": "react",
             "agent_mode": mode,
