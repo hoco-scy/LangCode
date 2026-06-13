@@ -35,9 +35,10 @@ class TestAgentRouting:
         state = {"messages": [ai_tool_message], "current_plan": None}
         assert _agent_routing(state) == "mode_tools"
 
-    def test_no_tool_calls_no_plan_goes_to_supervisor(self, ai_plain_message):
+    def test_no_tool_calls_no_plan_goes_to_end(self, ai_plain_message):
+        """react 路径完成 → 直接 END，不回 supervisor"""
         state = {"messages": [ai_plain_message], "current_plan": None}
-        assert _agent_routing(state) == "supervisor"
+        assert _agent_routing(state) == END
 
     def test_no_tool_calls_with_active_plan_goes_to_reflector(self, ai_plain_message, sample_plan):
         # 模拟：在 plan 执行中，agent 给出纯文本回复 → reflector
@@ -45,10 +46,10 @@ class TestAgentRouting:
         state = {"messages": [ai_plain_message], "current_plan": sample_plan.model_dump()}
         assert _agent_routing(state) == "reflector"
 
-    def test_no_tool_calls_completed_plan_goes_to_supervisor(self, ai_plain_message, sample_plan):
+    def test_no_tool_calls_completed_plan_goes_to_end(self, ai_plain_message, sample_plan):
         sample_plan.status = "completed"
         state = {"messages": [ai_plain_message], "current_plan": sample_plan.model_dump()}
-        assert _agent_routing(state) == "supervisor"
+        assert _agent_routing(state) == END
 
 
 class TestAfterTools:

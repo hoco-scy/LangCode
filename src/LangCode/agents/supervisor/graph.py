@@ -92,12 +92,12 @@ def _step_inject(state: LCState) -> dict:
 #  统一路由函数
 # ============================================================
 
-def _agent_routing(state: LCState) -> Literal["mode_tools", "reflector", "supervisor"]:
+def _agent_routing(state: LCState) -> Literal["mode_tools", "reflector", "__end__"]:
     """agent 后的统一路由：根据 state 判断下一步
 
-    - 有 tool_calls → mode_tools（执行工具）
+    - 有 tool_calls → mode_tools（继续 ReAct 循环）
     - 在 plan 执行流程中 + 无 tool_calls → reflector（评估步骤结果）
-    - 否则 → supervisor（回中枢）
+    - 否则 → END（react 路径完成，直接返回结果给用户）
     """
     last_message = state["messages"][-1]
     has_tool_calls = isinstance(last_message, AIMessage) and last_message.tool_calls
@@ -105,7 +105,7 @@ def _agent_routing(state: LCState) -> Literal["mode_tools", "reflector", "superv
     if has_tool_calls:
         return "mode_tools"
 
-    # 检查是否在 plan 执行流程中
+    # 检查是否在 plan 执行流程中（步骤正在执行）
     plan_data = state.get("current_plan")
     if plan_data and isinstance(plan_data, dict):
         try:
@@ -115,7 +115,8 @@ def _agent_routing(state: LCState) -> Literal["mode_tools", "reflector", "superv
         except Exception:
             pass
 
-    return "supervisor"
+    # react 路径完成 → 直接结束，不回 supervisor
+    return END
 
 
 def _after_tools(state: LCState) -> Literal["agent", "supervisor"]:
