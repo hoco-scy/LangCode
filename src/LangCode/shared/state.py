@@ -23,6 +23,7 @@ class LCState(TypedDict):
     current_agent: Literal["supervisor", "code", "research", "review"]
 
     # === 模式 ===
+    agent_mode: Literal["plan", "build"]
     dangerous_edit_mode: bool
     strict_mode: bool
 
@@ -41,3 +42,7 @@ class LCState(TypedDict):
     # === 多Agent ===
     task_description: str                  # 当前任务描述
     verify_errors: Optional[list[str]]     # CodeAgent 验证节点发现的错误列表
+
+    # === Supervisor 路由 ===
+    route: Annotated[str, _last_wins]      # supervisor 中枢路由决策
+    supervisor_iterations: Annotated[int, _last_wins]  # 回环迭代计数

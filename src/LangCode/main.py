@@ -2,6 +2,11 @@
 
 基于 LangGraph 的多 Agent 协作系统，具备记忆、规划、上下文管理等能力。
 
+中枢路由架构：
+- Supervisor 使用 structured output 决定路由（react/plan/code/research/review）
+- plan 模式（只读）和 build 模式（全权限）权限管理
+- 子路径完成后回环到 supervisor
+
 用法:
     python main.py           # 命令行对话模式（默认）
     python main.py --tui     # TUI 终端界面模式
@@ -25,20 +30,16 @@ from LangCode.memory.store import SQLiteMemoryStore
 from LangCode.memory.manager import MemoryManager
 from LangCode.memory.tools import create_memory_tools
 
-# 规划系统
-from LangCode.planning.tools import plan_create
-
 # 多Agent系统
 from LangCode.agents.code_agent import CodeAgent
 from LangCode.agents.research_agent import ResearchAgent
 from LangCode.agents.review_agent import ReviewAgent
-from LangCode.agents.delegate_tools import create_delegate_tools
 
 log = get_logger("main")
 
 # checkpoint 持久化路径
 _CHECKPOINT_DB = str(Path.home() / ".langcode" / "checkpoints.db")
-# 当前会话 ID 容器，delegate 工具通过此闭包获取 session-scoped thread_id
+# 当前会话 ID 容器
 _session_box = {"id": None}
 
 
@@ -75,7 +76,7 @@ def create_agent():
     checkpointer.setup()
     _ensure_checkpoint_schema(ckpt_conn)
 
-    # 子 Agent（checkpoint 由 delegate_tools 动态传入 session-scoped thread_id）
+    # 子 Agent（不再需要 delegate_tools，由 supervisor 路由决定）
     research_tools = [t for t in all_tools if t.name in (
         "read_file", "search_files", "fetch_api"
     )] + [memory_search]
@@ -88,8 +89,6 @@ def create_agent():
         "review": ReviewAgent(llm=llm, checkpoint=checkpointer, tools=review_tools),
     }
 
-    delegate_tools = create_delegate_tools(sub_agents)
-
     # MCP 工具（可选，从 ~/.langcode/mcp.json 加载）
     mcp_manager = MCPManager()
     mcp_status = mcp_manager.connect_all()
@@ -97,11 +96,10 @@ def create_agent():
         log.info("MCP: %d/%d 服务器已连接", mcp_status["connected"], mcp_status["total"])
     mcp_tools = mcp_manager.create_langchain_tools()
 
-    # 合并所有工具
+    # Supervisor 的全量工具（不再包含 plan_create 和 delegate_tools）
     all_tools_full = (
         all_tools + ast_tools + mcp_tools +
-        [memory_save, memory_search, memory_list, plan_create] +
-        delegate_tools
+        [memory_save, memory_search, memory_list]
     )
 
     # Supervisor Agent
@@ -158,13 +156,35 @@ def deal_command(graph, config: dict, user_input: str,
                 print(f"计划数据解析失败: {e}")
         return True, current_session, config
 
+    # /mode 命令
+    if user_input == "/mode" or user_input == "/mode status":
+        state = graph.get_state(config)
+        mode = state.values.get("agent_mode", "build")
+        print(f"当前权限模式: {mode}")
+        if mode == "plan":
+            print("  可用工具: read_file, search_files, fetch_api, memory_search, memory_list")
+        else:
+            print("  可用工具: 全部（含写操作）")
+        return True, current_session, config
+
+    if user_input == "/mode plan":
+        graph.update_state(config, {"agent_mode": "plan"})
+        print("已切换到 plan（只读）模式。可用工具: read_file, search_files, fetch_api, memory_search, memory_list")
+        return True, current_session, config
+
+    if user_input == "/mode build":
+        graph.update_state(config, {"agent_mode": "build"})
+        print("已切换到 build（全权限）模式。")
+        return True, current_session, config
+
     # /session 命令
     if user_input == "/session":
         state = graph.get_state(config)
         msg_count = len(state.values.get("messages", []))
         plan = state.values.get("current_plan")
+        mode = state.values.get("agent_mode", "build")
         plan_info = f", 计划进行中 (步骤 {state.values.get('plan_step_index', 0) + 1})" if plan else ""
-        print(f"当前会话: {current_session.id}  ({msg_count} 条消息{plan_info})")
+        print(f"当前会话: {current_session.id}  ({msg_count} 条消息{plan_info}, 模式: {mode})")
         return True, current_session, config
 
     if user_input == "/session list":
@@ -274,9 +294,8 @@ def _consume_events(graph, events, config):
     """处理事件流：流式打印 LLM 输出、工具调用与结果、中断恢复"""
     log.debug("开始消费事件流")
 
-    # LLM 输出节点（Supervisor agent + 子 Agent 的各类最终输出节点）
-    _LLM_NODES = {"agent", "synthesize_llm", "report"}
-    _TOOL_NODES = {"tools"}
+    _LLM_NODES = {"agent", "supervisor", "synthesize_llm", "report"}
+    _TOOL_NODES = {"mode_tools", "tools"}
 
     while True:
         interrupted = False
@@ -309,6 +328,15 @@ def _consume_events(graph, events, config):
                                 preview = content[:500] if isinstance(content, str) else str(content)[:500]
                                 print(f"\n[工具结果] {tool_name}: {preview}", flush=True)
                                 log.debug("工具结果: %s -> %s", tool_name, preview[:200])
+
+                        elif key == "supervisor":
+                            # supervisor 路由决策
+                            route = data[key].get("route", "")
+                            reasoning = data[key].get("reasoning", "")
+                            mode_val = data[key].get("agent_mode", "build")
+                            if route:
+                                print(f"\n[路由] → {route} (模式: {mode_val})", flush=True)
+                                log.info("supervisor 路由: %s (mode=%s)", route, mode_val)
 
                     if "__interrupt__" in data:
                         interrupt_info = data["__interrupt__"]

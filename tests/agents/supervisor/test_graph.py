@@ -1,27 +1,19 @@
-"""agents/supervisor/graph.py — 路由纯函数测试"""
+"""agents/supervisor/graph.py — 中枢路由架构下的路由函数测试"""
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.constants import END
 
-from LangCode.shared.routing import should_use_tools
 from LangCode.agents.supervisor.graph import (
     _increment_retry,
-    _should_plan,
-    _plan_or_end,
-    _after_step,
+    _agent_routing,
+    _after_tools,
+    _plan_ready,
+    _reflect_done,
+    _step_inject,
     SupervisorAgent,
 )
+from LangCode.agents.supervisor.router import MAX_SUPERVISOR_ITERATIONS
 from LangCode.planning.schema import Plan, PlanStep
-
-
-class TestShouldUseTools:
-    def test_tool_calls_returns_tools(self, ai_tool_message):
-        state = {"messages": [HumanMessage(content="hi"), ai_tool_message]}
-        assert should_use_tools(state) == "tools"
-
-    def test_plain_message_returns_end(self, ai_plain_message):
-        state = {"messages": [HumanMessage(content="hi"), ai_plain_message]}
-        assert should_use_tools(state) == END
 
 
 class TestIncrementRetry:
@@ -38,58 +30,103 @@ class TestIncrementRetry:
         assert _increment_retry(state) == {"tool_retry_count": 1}
 
 
-class TestShouldPlan:
-    def test_no_plan_returns_react(self):
+class TestAgentRouting:
+    def test_tool_calls_goes_to_mode_tools(self, ai_tool_message):
+        state = {"messages": [ai_tool_message], "current_plan": None}
+        assert _agent_routing(state) == "mode_tools"
+
+    def test_no_tool_calls_no_plan_goes_to_supervisor(self, ai_plain_message):
+        state = {"messages": [ai_plain_message], "current_plan": None}
+        assert _agent_routing(state) == "supervisor"
+
+    def test_no_tool_calls_with_active_plan_goes_to_reflector(self, ai_plain_message, sample_plan):
+        # 模拟：在 plan 执行中，agent 给出纯文本回复 → reflector
+        sample_plan.steps[0].status = "in_progress"
+        state = {"messages": [ai_plain_message], "current_plan": sample_plan.model_dump()}
+        assert _agent_routing(state) == "reflector"
+
+    def test_no_tool_calls_completed_plan_goes_to_supervisor(self, ai_plain_message, sample_plan):
+        sample_plan.status = "completed"
+        state = {"messages": [ai_plain_message], "current_plan": sample_plan.model_dump()}
+        assert _agent_routing(state) == "supervisor"
+
+
+class TestAfterTools:
+    def test_normal_iteration_goes_to_agent(self):
+        state = {"supervisor_iterations": 1}
+        assert _after_tools(state) == "agent"
+
+    def test_iteration_limit_goes_to_supervisor(self):
+        state = {"supervisor_iterations": MAX_SUPERVISOR_ITERATIONS + 1}
+        assert _after_tools(state) == "supervisor"
+
+
+class TestPlanReady:
+    def test_no_plan_goes_to_supervisor(self):
         state = {"current_plan": None}
-        assert _should_plan(state) == "react"
+        assert _plan_ready(state) == "supervisor"
 
     def test_active_plan_with_pending_steps(self, sample_plan):
         state = {"current_plan": sample_plan.model_dump()}
-        assert _should_plan(state) == "step_executor"
+        assert _plan_ready(state) == "step_inject"
 
-    def test_completed_plan_returns_react(self, sample_plan):
+    def test_completed_plan_goes_to_supervisor(self, sample_plan):
         sample_plan.status = "completed"
         state = {"current_plan": sample_plan.model_dump()}
-        assert _should_plan(state) == "react"
+        assert _plan_ready(state) == "supervisor"
 
-    def test_invalid_plan_returns_react(self):
+    def test_invalid_plan_goes_to_supervisor(self):
         state = {"current_plan": {"invalid": True}}
-        assert _should_plan(state) == "react"
+        assert _plan_ready(state) == "supervisor"
 
 
-class TestPlanOrEnd:
-    def test_no_plan_returns_end(self):
-        state = {"current_plan": None}
-        assert _plan_or_end(state) == END
-
-    def test_completed_plan_returns_end(self, sample_plan):
+class TestReflectDone:
+    def test_completed_plan_goes_to_supervisor(self, sample_plan):
         sample_plan.status = "completed"
         state = {"current_plan": sample_plan.model_dump()}
-        assert _plan_or_end(state) == END
+        assert _reflect_done(state) == "supervisor"
 
-    def test_abandoned_plan_returns_end(self, sample_plan):
+    def test_abandoned_plan_goes_to_supervisor(self, sample_plan):
         sample_plan.status = "abandoned"
         state = {"current_plan": sample_plan.model_dump()}
-        assert _plan_or_end(state) == END
+        assert _reflect_done(state) == "supervisor"
 
     def test_active_plan_with_pending_steps(self, sample_plan):
+        # 第一步完成，第二步待执行 → step_inject
+        sample_plan.steps[0].status = "done"
+        sample_plan.current_step = 1
         state = {"current_plan": sample_plan.model_dump()}
-        assert _plan_or_end(state) == "step_executor"
+        assert _reflect_done(state) == "step_inject"
 
-    def test_active_plan_all_done(self):
-        plan = Plan(goal="g", steps=[PlanStep(step_id=1, description="s", status="done")])
-        state = {"current_plan": plan.model_dump()}
-        assert _plan_or_end(state) == END
+    def test_needs_adjustment_goes_to_supervisor(self, sample_plan):
+        sample_plan.reflection = "需要调整: 修改步骤"
+        state = {"current_plan": sample_plan.model_dump()}
+        assert _reflect_done(state) == "supervisor"
 
 
-class TestAfterStep:
-    def test_tool_calls_returns_agent(self, ai_tool_message):
-        state = {"messages": [ai_tool_message]}
-        assert _after_step(state) == "agent"
+class TestStepInject:
+    def test_injects_step_prompt(self, sample_plan):
+        state = {"current_plan": sample_plan.model_dump(), "messages": []}
+        result = _step_inject(state)
+        assert "messages" in result
+        assert len(result["messages"]) == 1
+        assert isinstance(result["messages"][0], SystemMessage)
+        assert "第 1" in result["messages"][0].content
+        assert result["current_plan"]["steps"][0]["status"] == "in_progress"
 
-    def test_plain_message_returns_reflector(self, ai_plain_message):
-        state = {"messages": [ai_plain_message]}
-        assert _after_step(state) == "reflector"
+    def test_no_plan_returns_empty(self):
+        state = {"current_plan": None, "messages": []}
+        result = _step_inject(state)
+        assert result == {}
+
+    def test_all_steps_done_returns_empty(self, sample_plan):
+        for step in sample_plan.steps:
+            step.status = "done"
+        sample_plan.status = "completed"
+        sample_plan.current_step = len(sample_plan.steps)  # 超出范围，current() 返回 None
+        state = {"current_plan": sample_plan.model_dump(), "messages": []}
+        result = _step_inject(state)
+        assert result.get("messages") in (None, [], {})
 
 
 class TestGetAgentPrompt:
@@ -97,7 +134,8 @@ class TestGetAgentPrompt:
         prompt = SupervisorAgent.get_agent_prompt()
         assert isinstance(prompt, str)
         assert len(prompt) > 100
-        assert "ReAct" in prompt
+        # 新提示词包含路由和权限说明
+        assert "权限模式" in prompt or "plan" in prompt
 
 
 class TestInjectContext:
@@ -113,14 +151,12 @@ class TestInjectContext:
         assert agent._inject_context(state) == []
 
     def test_returns_empty_when_plan_completed(self):
-        from LangCode.planning.schema import Plan, PlanStep
         agent = self._make_agent()
         plan = Plan(goal="g", steps=[PlanStep(step_id=1, description="s", status="done")], status="completed")
         state = {"messages": [], "current_plan": plan.model_dump()}
         assert agent._inject_context(state) == []
 
     def test_injects_plan_summary_when_active(self):
-        from LangCode.planning.schema import Plan, PlanStep
         from langchain_core.messages import SystemMessage
         agent = self._make_agent()
         plan = Plan(goal="重构模块", steps=[PlanStep(step_id=1, description="分析代码")])

@@ -19,55 +19,63 @@ class TestCallLLM:
     def _make_agent(self, mock_llm=None):
         if mock_llm is None:
             mock_llm = MagicMock()
-        mock_llm.bind_tools.return_value = mock_llm
+        # bind_tools 返回一个 mock bound_llm
+        bound_llm = MagicMock()
+        mock_llm.bind_tools.return_value = bound_llm
+        bound_llm.invoke.return_value = AIMessage(content="ok")
         return ConcreteAgent(llm=mock_llm, checkpoint=None, tools=[])
 
     def test_resets_retry_count(self):
         agent = self._make_agent()
-        agent.bound_llm.invoke.return_value = AIMessage(content="ok")
         state = {
             "messages": [HumanMessage(content="hi")],
             "tool_retry_count": 5,
             "memory_context": "",
+            "agent_mode": "build",
         }
         result = agent._call_llm(state)
         assert result["tool_retry_count"] == 0
 
     def test_clears_memory_context(self):
         agent = self._make_agent()
-        agent.bound_llm.invoke.return_value = AIMessage(content="ok")
         state = {
             "messages": [HumanMessage(content="hi")],
             "tool_retry_count": 0,
             "memory_context": "一些记忆",
+            "agent_mode": "build",
         }
         result = agent._call_llm(state)
         assert result["memory_context"] == ""
 
     def test_injects_memory_context_as_system_message(self):
         agent = self._make_agent()
-        agent.bound_llm.invoke.return_value = AIMessage(content="ok")
         state = {
             "messages": [HumanMessage(content="hi")],
             "tool_retry_count": 0,
             "memory_context": "用户喜欢 Python",
+            "agent_mode": "build",
         }
         agent._call_llm(state)
-        called_messages = agent.bound_llm.invoke.call_args[0][0]
+        # 验证 bind_tools 被调用（动态绑定）
+        agent.llm.bind_tools.assert_called()
+        # 验证 bound_llm.invoke 被调用
+        bound_llm = agent.llm.bind_tools.return_value
+        called_messages = bound_llm.invoke.call_args[0][0]
         memory_msgs = [m for m in called_messages if hasattr(m, 'id') and m.id == "memory_context"]
         assert len(memory_msgs) == 1
         assert "用户喜欢 Python" in memory_msgs[0].content
 
     def test_retry_limit_appends_warning(self):
         agent = self._make_agent()
-        agent.bound_llm.invoke.return_value = AIMessage(content="ok")
         state = {
             "messages": [HumanMessage(content="hi")],
             "tool_retry_count": MAX_TOOL_RETRIES,
             "memory_context": "",
+            "agent_mode": "build",
         }
         agent._call_llm(state)
-        called_messages = agent.bound_llm.invoke.call_args[0][0]
+        bound_llm = agent.llm.bind_tools.return_value
+        called_messages = bound_llm.invoke.call_args[0][0]
         tool_messages = [m for m in called_messages if isinstance(m, ToolMessage)]
         assert len(tool_messages) == 1
         assert "连续失败" in tool_messages[0].content
@@ -75,14 +83,36 @@ class TestCallLLM:
     def test_returns_ai_message_in_list(self):
         agent = self._make_agent()
         response = AIMessage(content="回答")
-        agent.bound_llm.invoke.return_value = response
+        agent.llm.bind_tools.return_value.invoke.return_value = response
         state = {
             "messages": [HumanMessage(content="hi")],
             "tool_retry_count": 0,
             "memory_context": "",
+            "agent_mode": "build",
         }
         result = agent._call_llm(state)
         assert result["messages"] == [response]
+
+    def test_plan_mode_filters_tools(self):
+        agent = self._make_agent()
+        # 添加一些 mock tools
+        read_tool = MagicMock()
+        read_tool.name = "read_file"
+        write_tool = MagicMock()
+        write_tool.name = "write_file"
+        agent.tools = [read_tool, write_tool]
+
+        state = {
+            "messages": [HumanMessage(content="hi")],
+            "tool_retry_count": 0,
+            "memory_context": "",
+            "agent_mode": "plan",
+        }
+        agent._call_llm(state)
+        # 验证 bind_tools 只传入 plan 模式允许的工具
+        bound_tools = agent.llm.bind_tools.call_args[0][0]
+        assert len(bound_tools) == 1
+        assert bound_tools[0].name == "read_file"
 
 
 class TestInjectContext:

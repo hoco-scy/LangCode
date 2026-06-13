@@ -4,6 +4,7 @@
 - 上下文窗口管理（裁剪 + 摘要）
 - 记忆上下文注入
 - 工具重试上限提示
+- 动态工具绑定（根据 agent_mode 过滤）
 
 子类可覆盖 build_graph() 定制流程，覆盖 _call_llm() 添加额外注入。
 """
@@ -23,6 +24,7 @@ from langgraph.types import Checkpointer
 from LangCode.shared.state import LCState
 from LangCode.shared.routing import should_use_tools
 from LangCode.shared.context import trim_messages, summarize_old_messages
+from LangCode.shared.mode_tools import filter_tools_for_mode
 from LangCode.shared.logger import get_logger
 
 log = get_logger("agents.base")
@@ -40,8 +42,13 @@ class BaseAgent(ABC):
         self.llm = llm
         self.checkpoint = checkpoint
         self.tools = tools
-        self.bound_llm = llm.bind_tools(tools)
+        # bound_llm 不再在构造时绑定工具，改为 _call_llm 中动态绑定
         self.graph = self.build_graph()
+
+    def _get_tools_for_mode(self, state: LCState) -> list[BaseTool]:
+        """根据 agent_mode 过滤工具"""
+        mode = state.get("agent_mode", "build")
+        return filter_tools_for_mode(self.tools, mode)
 
     def _inject_context(self, state: LCState) -> list[BaseMessage]:
         """子类可覆盖此方法，返回要注入到 LLM 上下文的额外消息。
@@ -52,7 +59,7 @@ class BaseAgent(ABC):
         return []
 
     def _call_llm(self, state: LCState) -> dict:
-        """调用 LLM，包含上下文管理、记忆注入和重试保护"""
+        """调用 LLM，包含上下文管理、记忆注入、动态工具绑定和重试保护"""
         messages = list(state["messages"])
         retry_count = state.get("tool_retry_count", 0)
 
@@ -85,9 +92,14 @@ class BaseAgent(ABC):
             for msg in reversed(extra_msgs):
                 messages.insert(insert_idx, msg)
 
-        response = self.bound_llm.invoke(messages)
+        # 动态工具绑定：根据 agent_mode 过滤
+        mode = state.get("agent_mode", "build")
+        tools_for_mode = filter_tools_for_mode(self.tools, mode)
+        bound_llm = self.llm.bind_tools(tools_for_mode)
+
+        response = bound_llm.invoke(messages)
         if response.tool_calls:
-            log.debug("LLM 请求工具: %s", [tc["name"] for tc in response.tool_calls])
+            log.debug("LLM 请求工具: %s (mode=%s)", [tc["name"] for tc in response.tool_calls], mode)
         return {"messages": [response], "tool_retry_count": 0, "memory_context": ""}
 
     def build_graph(self) -> CompiledStateGraph:
