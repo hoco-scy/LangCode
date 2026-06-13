@@ -5,6 +5,7 @@ from langchain.tools import tool
 from pydantic import BaseModel, Field
 
 from LangCode.shared.logger import get_logger
+from datetime import datetime
 
 log = get_logger("memory.tools")
 

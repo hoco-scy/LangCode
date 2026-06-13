@@ -51,6 +51,12 @@ def reflect_node(state: LCState, llm: ChatOpenAI) -> dict:
         response = llm.invoke(messages)
         content = response.content.strip()
 
+        # 处理空响应
+        if not content:
+            log.warning("反思: LLM 返回空响应，默认标记完成")
+            plan.mark_current_done("LLM 无响应，默认继续")
+            return {"current_plan": plan.model_dump()}
+
         import json
         if content.startswith("```"):
             content = content.split("\n", 1)[1] if "\n" in content else content[3:]

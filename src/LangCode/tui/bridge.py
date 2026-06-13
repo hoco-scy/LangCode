@@ -131,8 +131,12 @@ class AgentBridge:
 
     def _process_events(self, events):
         """处理 LangGraph 事件流，放入队列"""
+        _LLM_NODES = {"agent", "synthesize_llm", "report"}
+        _TOOL_NODES = {"tools"}
+
         try:
             for mode, data in events:
+
                 if mode == "messages":
                     chunk, _metadata = data
                     if isinstance(chunk, AIMessageChunk) and chunk.content:
@@ -141,33 +145,34 @@ class AgentBridge:
                         )
 
                 elif mode == "updates":
-                    if "agent" in data:
-                        agent_msg = data["agent"].get("messages")
-                        if agent_msg:
-                            msgs = agent_msg if isinstance(agent_msg, list) else [agent_msg]
-                            for msg in msgs:
-                                for tc in getattr(msg, "tool_calls", []) or []:
-                                    self._emit(
-                                        BridgeEvent("tool_call", {
-                                            "name": tc.get("name", "unknown"),
-                                            "args": tc.get("args", {}),
-                                        })
-                                    )
+                    for key in data:
+                        if key in _LLM_NODES:
+                            node_msgs = data[key].get("messages")
+                            if node_msgs:
+                                msgs = node_msgs if isinstance(node_msgs, list) else [node_msgs]
+                                for msg in msgs:
+                                    for tc in getattr(msg, "tool_calls", []) or []:
+                                        self._emit(
+                                            BridgeEvent("tool_call", {
+                                                "name": tc.get("name", "unknown"),
+                                                "args": tc.get("args", {}),
+                                            })
+                                        )
 
-                    if "tools" in data:
-                        for msg in data["tools"].get("messages", []):
-                            name = getattr(msg, "name", "unknown")
-                            content = getattr(msg, "content", "")
-                            preview = (
-                                content[:800] if isinstance(content, str)
-                                else str(content)[:800]
-                            )
-                            self._emit(
-                                BridgeEvent("tool_result", {
-                                    "name": name,
-                                    "content": preview,
-                                })
-                            )
+                        elif key in _TOOL_NODES:
+                            for msg in data[key].get("messages", []):
+                                name = getattr(msg, "name", "unknown")
+                                content = getattr(msg, "content", "")
+                                preview = (
+                                    content[:800] if isinstance(content, str)
+                                    else str(content)[:800]
+                                )
+                                self._emit(
+                                    BridgeEvent("tool_result", {
+                                        "name": name,
+                                        "content": preview,
+                                    })
+                                )
 
                     if "__interrupt__" in data:
                         interrupt_info = data["__interrupt__"]

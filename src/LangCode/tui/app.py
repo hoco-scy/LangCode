@@ -255,6 +255,16 @@ class LangCodeTUI(App):
                     content = str(event.data.get("content", ""))[:500]
                     chat.write(f"[{DIM_COLOR}]     → {content}[/]")
 
+                elif event.type == "sub_agent_boundary":
+                    # 先把已积累的文本写入日志
+                    if self._pending_text:
+                        chat.write(self._pending_text)
+                        self._pending_text = ""
+                        streaming.update("")
+                    agent_label = event.data
+                    chat.write(f"\n[bold]  ↘ 委托: {agent_label}[/]")
+                    header_printed = False
+
                 elif event.type == "interrupt":
                     # 先写入已积累文本
                     if self._pending_text:

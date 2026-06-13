@@ -83,7 +83,9 @@ class SupervisorAgent(BaseAgent):
     name = "supervisor"
     description = "主控 Agent：编排多 Agent 协作，支持 ReAct + Plan-and-Execute 双模式"
 
-    def __init__(self, llm: ChatOpenAI, sys_checkpoint: Checkpointer, sys_tools: list[BaseTool]):
+    def __init__(self, llm: ChatOpenAI, sys_checkpoint: Checkpointer, sys_tools: list[BaseTool],
+                 sub_agents: dict = None):
+        self.sub_agents = sub_agents or {}
         super().__init__(llm, sys_checkpoint, sys_tools)
 
     def _inject_context(self, state: LCState) -> list:
@@ -133,6 +135,11 @@ class SupervisorAgent(BaseAgent):
         builder.add_conditional_edges("planner", _plan_or_end)
         builder.add_conditional_edges("step_executor", _after_step)
         builder.add_edge("reflector", "step_executor")
+
+        # 子 Agent 节点（编译后的子图）+ 完成后回到 Supervisor 的 agent 节点
+        for name, agent in self.sub_agents.items():
+            builder.add_node(f"{name}_agent", agent.get_graph())
+            builder.add_edge(f"{name}_agent", "agent")
 
         return builder.compile(checkpointer=self.checkpoint)
 

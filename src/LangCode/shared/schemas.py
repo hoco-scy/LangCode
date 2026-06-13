@@ -108,12 +108,18 @@ class AstFunctionInfo(BaseModel):
     line: int = Field(description="起始行号")
     params: list[str] = Field(default_factory=list, description="参数名列表")
 
+    def __getitem__(self, key):
+        return getattr(self, key)
+
 
 class AstClassInfo(BaseModel):
     """类信息"""
     name: str = Field(description="类名")
     line: int = Field(description="起始行号")
     methods: list[str] = Field(default_factory=list, description="方法名列表")
+
+    def __getitem__(self, key):
+        return getattr(self, key)
 
 
 class AstInfoResponse(ToolResponse):
@@ -133,6 +139,9 @@ class AstFindResult(BaseModel):
     end_line: Optional[int] = Field(default=None, description="结束行号")
     class_name: Optional[str] = Field(default=None, description="所属类名（仅 method 类型）")
     text_preview: Optional[str] = Field(default=None, description="代码预览")
+
+    def __getitem__(self, key):
+        return getattr(self, key)
 
 
 class AstFindResponse(ToolResponse):

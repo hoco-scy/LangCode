@@ -96,7 +96,7 @@ class TestAstFind:
         result = ast_find(sample_file, "method", "add")
         assert result["success"] is True
         assert result["found"] == 1
-        assert result["results"][0]["class"] == "Calculator"
+        assert result["results"][0]["class_name"] == "Calculator"
 
     def test_find_variable(self, sample_file):
         result = ast_find(sample_file, "variable", "MAX_VALUE")

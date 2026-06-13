@@ -8,7 +8,6 @@ import pytest
 from LangCode.shared.tools import (
     read_file, write_file, edit_file, search_files,
     execute_shell, run_python,
-    git_status, git_diff, git_log, git_blame,
 )
 
 # Build Chinese strings via chr() so the source stays ASCII-only.
@@ -165,77 +164,3 @@ class TestRunPython:
         result = run_python.invoke({"code": "def foo(", "timeout": 10})
         assert result["success"] is False
 
-
-# ============================================================
-#  Git Chinese encoding integration tests
-# ============================================================
-
-# 测试者
-_AUTHOR     = _ZH(0x6D4B, 0x8BD5, 0x8005)
-_EMAIL      = "test@test.com"
-# 示例.py
-_REPO_FN    = _ZH(0x793A, 0x4F8B) + ".py"
-# 初始提交：添加示例文件
-_COMMIT_MSG = _ZH(0x521D, 0x59CB, 0x63D0, 0x4EA4, 0xFF1A, 0x6DFB, 0x52A0,
-                   0x793A, 0x4F8B, 0x6587, 0x4EF6)
-# 新文件.txt
-_NEW_FILE   = _ZH(0x65B0, 0x6587, 0x4EF6) + ".txt"
-# 内容
-_NEW_FILE_C = _ZH(0x5185, 0x5BB9)
-
-
-@pytest.fixture
-def git_repo(tmp_path):
-    """Create a temp git repo with a Chinese commit message and filename."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    env = {
-        **os.environ,
-        "GIT_AUTHOR_NAME":     _AUTHOR,
-        "GIT_AUTHOR_EMAIL":    _EMAIL,
-        "GIT_COMMITTER_NAME":  _AUTHOR,
-        "GIT_COMMITTER_EMAIL": _EMAIL,
-    }
-    subprocess.run(["git", "init"], cwd=str(repo), capture_output=True, check=True)
-    subprocess.run(["git", "config", "user.name",  _AUTHOR], cwd=str(repo), capture_output=True)
-    subprocess.run(["git", "config", "user.email", _EMAIL],  cwd=str(repo), capture_output=True)
-    # Don't let git escape non-ASCII filenames to \nnn octal sequences
-    subprocess.run(["git", "config", "core.quotePath", "false"], cwd=str(repo), capture_output=True)
-
-    src = repo / _REPO_FN
-    src.write_text("# comment\nprint('hello')\n", encoding="utf-8")
-    subprocess.run(["git", "add", _REPO_FN], cwd=str(repo), capture_output=True, env=env)
-    subprocess.run(["git", "commit", "-m", _COMMIT_MSG], cwd=str(repo), capture_output=True, env=env)
-    return repo
-
-
-class TestGitChineseEncoding:
-    def test_git_log_decodes_chinese(self, git_repo):
-        # 初始提交
-        _needle = _ZH(0x521D, 0x59CB, 0x63D0, 0x4EA4)
-        result = git_log.invoke({"count": 5, "file_path": None, "cwd": str(git_repo)})
-        assert result["success"] is True
-        messages = [c.message for c in result["commits"]]
-        assert any(_needle in msg for msg in messages), \
-            "Chinese commit message garbled: %s" % messages
-
-    def test_git_status_decodes_chinese_filename(self, git_repo):
-        (git_repo / _NEW_FILE).write_text(_NEW_FILE_C, encoding="utf-8")
-        # 新文件
-        _needle = _ZH(0x65B0, 0x6587, 0x4EF6)
-        result = git_status.invoke({"path": None, "cwd": str(git_repo)})
-        assert result["success"] is True
-        assert _needle in result["status"], \
-            "Chinese filename garbled: %s" % result["status"]
-
-    def test_git_blame_decodes_chinese_author(self, git_repo):
-        result = git_blame.invoke({
-            "file_path": _REPO_FN,
-            "start_line": None,
-            "end_line": None,
-            "cwd": str(git_repo),
-        })
-        assert result["success"] is True
-        refs = [b.reference for b in result["blame"]]
-        assert any(_AUTHOR in r for r in refs), \
-            "Chinese author name garbled: %s" % refs

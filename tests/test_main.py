@@ -1,10 +1,13 @@
-"""main.py — deal_command 测试"""
+"""main.py — deal_command + helper 函数测试"""
 
+import sqlite3
 from unittest.mock import MagicMock
+
+from langchain_core.messages import HumanMessage, AIMessage
 
 from LangCode.memory.store import SQLiteMemoryStore, MemoryRecord
 from LangCode.shared.session import SessionStore, SessionRecord
-from LangCode.main import deal_command
+from LangCode.main import deal_command, _sync_title
 
 
 def _make_session_record(workspace="/proj"):
@@ -180,3 +183,43 @@ class TestDealCommandSession:
         assert cur is self.session  # 未切换
         captured = capsys.readouterr()
         assert "未找到" in captured.out
+
+
+class TestSyncTitle:
+    def test_sets_title_from_first_human_message(self):
+        graph = MagicMock()
+        graph.get_state.return_value.values = {
+            "messages": [
+                HumanMessage(content="帮我写一个排序算法"),
+                AIMessage(content="好的"),
+            ]
+        }
+        session_store = SessionStore(db_path=":memory:")
+        session = SessionRecord(id="s1", workspace="/proj")
+
+        _sync_title(graph, {"configurable": {"thread_id": "s1"}}, session_store, session)
+        assert session.title == "帮我写一个排序算法"
+
+    def test_skips_non_human_messages(self):
+        graph = MagicMock()
+        graph.get_state.return_value.values = {
+            "messages": [AIMessage(content="系统消息")]
+        }
+        session_store = SessionStore(db_path=":memory:")
+        session = SessionRecord(id="s2", workspace="/proj", title="原标题")
+
+        _sync_title(graph, {"configurable": {"thread_id": "s2"}}, session_store, session)
+        assert session.title == "原标题"
+
+    def test_saves_to_session_store(self):
+        graph = MagicMock()
+        graph.get_state.return_value.values = {
+            "messages": [HumanMessage(content="新标题")]
+        }
+        session_store = SessionStore(db_path=":memory:")
+        session = SessionRecord(id="s3", workspace="/proj")
+
+        _sync_title(graph, {"configurable": {"thread_id": "s3"}}, session_store, session)
+        saved = session_store.get("s3", "/proj")
+        assert saved is not None
+        assert saved.title == "新标题"

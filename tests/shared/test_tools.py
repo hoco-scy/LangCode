@@ -6,7 +6,7 @@ from unittest.mock import patch
 from pydantic import ValidationError
 
 from LangCode.shared.tools import (
-    _extract_user_error, _get_shell_encoding, _GIT_ENCODING,
+    _extract_user_error, _get_shell_encoding,
     ReadFileInput, WriteFileInput, EditFileInput,
     SearchFilesInput, RunPythonInput, RunCommandInput,
 )
@@ -82,10 +82,6 @@ class TestPydanticModels:
 # ============================================================
 
 class TestEncodingHelpers:
-    def test_git_encoding_is_utf8(self):
-        """Git 通过 GIT_IOENCODING 强制 UTF-8，常量必须为 utf-8"""
-        assert _GIT_ENCODING == "utf-8"
-
     @patch("LangCode.shared.tools._platform.system", return_value="Linux")
     def test_shell_encoding_linux_returns_utf8(self, _mock):
         assert _get_shell_encoding() == "utf-8"

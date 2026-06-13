@@ -98,3 +98,39 @@ class TestGetAgentPrompt:
         assert isinstance(prompt, str)
         assert len(prompt) > 100
         assert "ReAct" in prompt
+
+
+class TestInjectContext:
+    def _make_agent(self):
+        from unittest.mock import MagicMock
+        mock_llm = MagicMock()
+        mock_llm.bind_tools.return_value = mock_llm
+        return SupervisorAgent(llm=mock_llm, sys_checkpoint=None, sys_tools=[])
+
+    def test_returns_empty_when_no_plan(self):
+        agent = self._make_agent()
+        state = {"messages": [], "current_plan": None}
+        assert agent._inject_context(state) == []
+
+    def test_returns_empty_when_plan_completed(self):
+        from LangCode.planning.schema import Plan, PlanStep
+        agent = self._make_agent()
+        plan = Plan(goal="g", steps=[PlanStep(step_id=1, description="s", status="done")], status="completed")
+        state = {"messages": [], "current_plan": plan.model_dump()}
+        assert agent._inject_context(state) == []
+
+    def test_injects_plan_summary_when_active(self):
+        from LangCode.planning.schema import Plan, PlanStep
+        from langchain_core.messages import SystemMessage
+        agent = self._make_agent()
+        plan = Plan(goal="重构模块", steps=[PlanStep(step_id=1, description="分析代码")])
+        state = {"messages": [], "current_plan": plan.model_dump()}
+        result = agent._inject_context(state)
+        assert len(result) == 1
+        assert isinstance(result[0], SystemMessage)
+        assert "重构模块" in result[0].content
+
+    def test_returns_empty_on_invalid_plan(self):
+        agent = self._make_agent()
+        state = {"messages": [], "current_plan": {"invalid": True}}
+        assert agent._inject_context(state) == []

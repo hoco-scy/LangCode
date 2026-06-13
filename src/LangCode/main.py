@@ -17,7 +17,7 @@ from langgraph.types import Command
 from LangCode.agents.supervisor import SupervisorAgent
 from LangCode.shared import llm, all_tools, ast_tools, MCPManager, SessionStore, get_logger
 from LangCode.shared.session import SessionRecord
-from LangCode.shared.command import COMMAND_EXIT, COMMAND_MEMORY
+from LangCode.shared.command import COMMAND_EXIT, COMMAND_MEMORY, COMMAND_PLAN
 from LangCode.shared.prompts import get_platform_prompt
 
 # 记忆系统
@@ -26,7 +26,7 @@ from LangCode.memory.manager import MemoryManager
 from LangCode.memory.tools import create_memory_tools
 
 # 规划系统
-from LangCode.planning.tools import plan_create, plan_show
+from LangCode.planning.tools import plan_create
 
 # 多Agent系统
 from LangCode.agents.code_agent import CodeAgent
@@ -77,10 +77,10 @@ def create_agent():
 
     # 子 Agent（checkpoint 由 delegate_tools 动态传入 session-scoped thread_id）
     research_tools = [t for t in all_tools if t.name in (
-        "read_file", "search_files", "fetch_api", "git_log", "git_blame"
+        "read_file", "search_files", "fetch_api"
     )] + [memory_search]
     review_tools = [t for t in all_tools if t.name in (
-        "read_file", "search_files", "run_python", "execute_shell", "git_log", "git_blame"
+        "read_file", "search_files", "run_python", "execute_shell"
     )]
     sub_agents = {
         "code": CodeAgent(llm=llm, checkpoint=checkpointer, tools=all_tools),
@@ -88,7 +88,7 @@ def create_agent():
         "review": ReviewAgent(llm=llm, checkpoint=checkpointer, tools=review_tools),
     }
 
-    delegate_tools = create_delegate_tools(sub_agents, lambda: _session_box["id"])
+    delegate_tools = create_delegate_tools(sub_agents)
 
     # MCP 工具（可选，从 ~/.langcode/mcp.json 加载）
     mcp_manager = MCPManager()
@@ -100,12 +100,13 @@ def create_agent():
     # 合并所有工具
     all_tools_full = (
         all_tools + ast_tools + mcp_tools +
-        [memory_save, memory_search, memory_list, plan_create, plan_show] +
+        [memory_save, memory_search, memory_list, plan_create] +
         delegate_tools
     )
 
     # Supervisor Agent
-    lc_agent = SupervisorAgent(llm=llm, sys_checkpoint=checkpointer, sys_tools=all_tools_full)
+    lc_agent = SupervisorAgent(llm=llm, sys_checkpoint=checkpointer, sys_tools=all_tools_full,
+                               sub_agents=sub_agents)
     lc_graph = lc_agent.get_graph()
     lc_agent_prompt = lc_agent.get_agent_prompt()
 
@@ -140,6 +141,21 @@ def deal_command(graph, config: dict, user_input: str,
             for r in records:
                 tags = f" [{', '.join(r.tags)}]" if r.tags else ""
                 print(f"  [{r.memory_type}]{tags} {r.content[:80]}")
+        return True, current_session, config
+
+    # /plan 命令
+    if user_input == COMMAND_PLAN:
+        from LangCode.planning.schema import Plan
+        state = graph.get_state(config)
+        plan_data = state.values.get("current_plan")
+        if not plan_data:
+            print("当前没有活跃的执行计划。")
+        else:
+            try:
+                plan = Plan(**plan_data)
+                print(plan.to_display())
+            except Exception as e:
+                print(f"计划数据解析失败: {e}")
         return True, current_session, config
 
     # /session 命令
@@ -258,48 +274,58 @@ def _consume_events(graph, events, config):
     """处理事件流：流式打印 LLM 输出、工具调用与结果、中断恢复"""
     log.debug("开始消费事件流")
 
+    # LLM 输出节点（Supervisor agent + 子 Agent 的各类最终输出节点）
+    _LLM_NODES = {"agent", "synthesize_llm", "report"}
+    _TOOL_NODES = {"tools"}
+
     while True:
         interrupted = False
 
-        for mode, data in events:
-            if mode == "messages":
-                chunk, _metadata = data
-                if isinstance(chunk, AIMessageChunk) and chunk.content:
-                    print(chunk.content, end="", flush=True)
+        try:
+            for mode, data in events:
+                if mode == "messages":
+                    chunk, _metadata = data
+                    if isinstance(chunk, AIMessageChunk) and chunk.content:
+                        print(chunk.content, end="", flush=True)
 
-            elif mode == "updates":
-                log.debug("收到 updates: %s", list(data.keys()))
+                elif mode == "updates":
+                    log.debug("收到 updates: %s", list(data.keys()))
 
-                if "agent" in data:
-                    agent_msg = data["agent"].get("messages")
-                    if agent_msg:
-                        msgs = agent_msg if isinstance(agent_msg, list) else [agent_msg]
-                        for msg in msgs:
-                            for tc in getattr(msg, "tool_calls", []) or []:
-                                args_preview = str(tc.get("args", ""))[:300]
-                                print(f"\n[工具调用] {tc['name']}({args_preview})", flush=True)
-                                log.info("工具调用: %s args=%s", tc["name"], args_preview)
+                    for key in data:
+                        if key in _LLM_NODES:
+                            node_msgs = data[key].get("messages")
+                            if node_msgs:
+                                msgs = node_msgs if isinstance(node_msgs, list) else [node_msgs]
+                                for msg in msgs:
+                                    for tc in getattr(msg, "tool_calls", []) or []:
+                                        args_preview = str(tc.get("args", ""))[:300]
+                                        print(f"\n[工具调用] {tc['name']}({args_preview})", flush=True)
+                                        log.info("工具调用: %s args=%s", tc["name"], args_preview)
 
-                if "tools" in data:
-                    for msg in data["tools"].get("messages", []):
-                        tool_name = getattr(msg, "name", "unknown")
-                        content = getattr(msg, "content", "")
-                        preview = content[:500] if isinstance(content, str) else str(content)[:500]
-                        print(f"\n[工具结果] {tool_name}: {preview}", flush=True)
-                        log.debug("工具结果: %s -> %s", tool_name, preview[:200])
+                        elif key in _TOOL_NODES:
+                            for msg in data[key].get("messages", []):
+                                tool_name = getattr(msg, "name", "unknown")
+                                content = getattr(msg, "content", "")
+                                preview = content[:500] if isinstance(content, str) else str(content)[:500]
+                                print(f"\n[工具结果] {tool_name}: {preview}", flush=True)
+                                log.debug("工具结果: %s -> %s", tool_name, preview[:200])
 
-                if "__interrupt__" in data:
-                    interrupt_info = data["__interrupt__"]
-                    log.info("触发中断: %s", interrupt_info[0].value)
-                    print(f"\nAgent 需要确认: {interrupt_info[0].value}")
-                    user_input = input(">: ").strip()
-                    log.info("中断恢复输入: %s", user_input)
-                    events = graph.stream(
-                        Command(resume=user_input), config,
-                        stream_mode=["messages", "updates"],
-                    )
-                    interrupted = True
-                    break
+                    if "__interrupt__" in data:
+                        interrupt_info = data["__interrupt__"]
+                        log.info("触发中断: %s", interrupt_info[0].value)
+                        print(f"\nAgent 需要确认: {interrupt_info[0].value}")
+                        user_input = input(">: ").strip()
+                        log.info("中断恢复输入: %s", user_input)
+                        events = graph.stream(
+                            Command(resume=user_input), config,
+                            stream_mode=["messages", "updates"],
+                        )
+                        interrupted = True
+                        break
+        except Exception as e:
+            log.error("事件流异常: %s", e)
+            print(f"\n[错误] {type(e).__name__}: {e}")
+            break
 
         if not interrupted:
             log.debug("事件流结束")

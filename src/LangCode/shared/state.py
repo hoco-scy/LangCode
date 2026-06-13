@@ -1,7 +1,11 @@
 from typing import Literal, Annotated, Optional, TypedDict
-from operator import add
 from langgraph.graph import add_messages
 from langchain_core.messages import AnyMessage
+
+
+def _last_wins(_old, new):
+    """reducer: 多个节点同一步更新同一 key 时，取最后一个值"""
+    return new
 
 
 class LCState(TypedDict):
@@ -13,7 +17,7 @@ class LCState(TypedDict):
     platform: Literal["windows", "linux", "mac"]
 
     # === 工具 ===
-    tool_retry_count: int
+    tool_retry_count: Annotated[int, _last_wins]
 
     # === Agent 路由 ===
     current_agent: Literal["supervisor", "code", "research", "review"]
@@ -36,6 +40,4 @@ class LCState(TypedDict):
 
     # === 多Agent ===
     task_description: str                  # 当前任务描述
-    delegated_to: Optional[str]            # 委托给哪个子 agent
-    sub_agent_results: Annotated[list[dict], add]  # 子 agent 返回结果
     verify_errors: Optional[list[str]]     # CodeAgent 验证节点发现的错误列表
