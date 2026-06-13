@@ -91,6 +91,19 @@ class TestInjectContext:
         assert len(result) == 1
         assert "下一步" in result[0].content
 
+    def test_injects_completed_steps_summary(self):
+        """有已完成步骤时注入摘要"""
+        agent = self._make_agent()
+        plan = Plan(goal="X", steps=[
+            PlanStep(step_id=1, description="A", status="done", result="文件已读取"),
+            PlanStep(step_id=2, description="B", status="in_progress"),
+        ])
+        plan.current_step = 1
+        result = agent._inject_context({"messages": [], "current_plan": plan.model_dump()})
+        assert len(result) == 1
+        assert "已完成步骤摘要" in result[0].content
+        assert "文件已读取" in result[0].content
+
     def test_empty_when_no_plan(self):
         assert self._make_agent()._inject_context({"messages": [], "current_plan": None}) == []
 

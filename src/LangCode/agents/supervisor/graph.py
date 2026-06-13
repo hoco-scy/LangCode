@@ -108,7 +108,7 @@ class SupervisorAgent(BaseAgent):
         super().__init__(llm, sys_checkpoint, sys_tools)
 
     def _inject_context(self, state: LCState) -> list:
-        """注入计划上下文"""
+        """注入计划上下文：当前步骤指令 + 已完成步骤摘要"""
         plan_data = state.get("current_plan")
         if not plan_data or not isinstance(plan_data, dict):
             return []
@@ -120,19 +120,27 @@ class SupervisorAgent(BaseAgent):
         if plan.status != "active":
             return []
 
+        # 构建已完成步骤摘要
+        completed_summary = ""
+        for step in plan.steps:
+            if step.status == "done" and step.result:
+                completed_summary += f"  第{step.step_id}步(已完成): {step.result[:100]}\n"
+
         current = plan.current()
         if current and current.status == "in_progress":
-            return [SystemMessage(
-                id="plan_execution",
-                content=f"你正在执行计划。严格按当前步骤操作，不要偏离。\n\n"
-                        f"{plan.to_display()}\n\n"
-                        f"专注完成第 {current.step_id} 步：{current.description}"
-            )]
+            parts = [
+                "你正在执行计划。严格按当前步骤操作，不要偏离。\n",
+                plan.to_display(),
+            ]
+            if completed_summary:
+                parts.append(f"\n已完成步骤摘要:\n{completed_summary}")
+            parts.append(f"\n专注完成第 {current.step_id} 步：{current.description}")
+            return [SystemMessage(id="plan_execution", content="\n".join(parts))]
         elif current and current.status == "pending":
-            return [SystemMessage(
-                id="plan_next_step",
-                content=f"计划的下一步即将开始。\n\n{plan.to_display()}"
-            )]
+            parts = [f"计划的下一步即将开始。\n\n{plan.to_display()}"]
+            if completed_summary:
+                parts.append(f"\n已完成步骤摘要:\n{completed_summary}")
+            return [SystemMessage(id="plan_next_step", content="\n".join(parts))]
         else:
             return [SystemMessage(
                 id="plan_overview",
