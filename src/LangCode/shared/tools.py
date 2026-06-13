@@ -3,6 +3,7 @@ import subprocess
 import sys
 import os
 import glob as _glob
+import locale
 import threading
 import platform as _platform
 import psutil
@@ -21,6 +22,13 @@ from LangCode.shared.schemas import (
 )
 
 log = get_logger("tools")
+
+
+def _get_shell_encoding() -> str:
+    """返回 shell 子进程的正确编码：Windows 用系统代码页，其他平台用 UTF-8"""
+    if _platform.system() == "Windows":
+        return locale.getpreferredencoding(False)
+    return "utf-8"
 
 
 class ReadFileInput(BaseModel):
@@ -98,12 +106,14 @@ def execute_shell(command: str, timeout: int = 30) -> CommandResponse:
     """执行 shell 命令"""
     log.info("execute_shell: command=%s timeout=%ds", command, timeout)
     try:
+        # Windows cmd.exe 使用系统代码页（如 cp936），强制 UTF-8 会导致乱码
+        enc = _get_shell_encoding()
         result = subprocess.run(
             command,
             shell=True,
             capture_output=True,
             text=True,
-            encoding="utf-8",
+            encoding=enc,
             errors="replace",
             timeout=timeout
         )
@@ -325,19 +335,25 @@ def search_files(pattern: str, directory: str = ".", max_results: int = 100) -> 
 #  Git 工具
 # ============================================================
 
+# Git 输出通常为 UTF-8（通过 GIT_IOENCODING 强制），统一使用
+_GIT_ENCODING = "utf-8"
+
+
 class GitStatusInput(BaseModel):
     path: Optional[str] = Field(default=None, description="限制显示的目录路径，为空则显示整个仓库状态")
+    cwd: Optional[str] = Field(default=None, description="Git 仓库根目录，为空则使用当前工作目录")
 
 
 @tool("git_status", args_schema=GitStatusInput)
-def git_status(path: Optional[str] = None) -> GitStatusResponse:
+def git_status(path: Optional[str] = None, cwd: Optional[str] = None) -> GitStatusResponse:
     """显示 Git 工作区状态（已修改、已暂存、未跟踪的文件）"""
-    log.info("git_status: path=%s", path)
+    log.info("git_status: path=%s cwd=%s", path, cwd)
     try:
         cmd = ["git", "status", "--short"]
         if path:
             cmd.append(path)
-        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", timeout=10)
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding=_GIT_ENCODING, timeout=10,
+                                env={**os.environ, "GIT_IOENCODING": "utf-8"}, cwd=cwd)
         if result.returncode != 0:
             return GitStatusResponse(success=False, error=result.stderr.strip() or "不在 Git 仓库中")
         output = result.stdout.strip()
@@ -351,19 +367,21 @@ def git_status(path: Optional[str] = None) -> GitStatusResponse:
 class GitDiffInput(BaseModel):
     file_path: Optional[str] = Field(default=None, description="指定文件路径，为空则显示所有变更")
     staged: bool = Field(default=False, description="True 显示已暂存的变更，False 显示未暂存的变更")
+    cwd: Optional[str] = Field(default=None, description="Git 仓库根目录，为空则使用当前工作目录")
 
 
 @tool("git_diff", args_schema=GitDiffInput)
-def git_diff(file_path: Optional[str] = None, staged: bool = False) -> GitDiffResponse:
+def git_diff(file_path: Optional[str] = None, staged: bool = False, cwd: Optional[str] = None) -> GitDiffResponse:
     """显示 Git 文件变更差异。可查看未暂存或已暂存的改动。"""
-    log.info("git_diff: file_path=%s staged=%s", file_path, staged)
+    log.info("git_diff: file_path=%s staged=%s cwd=%s", file_path, staged, cwd)
     try:
         cmd = ["git", "diff"]
         if staged:
             cmd.append("--staged")
         if file_path:
             cmd.extend(["--", file_path])
-        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", timeout=15)
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding=_GIT_ENCODING, timeout=15,
+                                env={**os.environ, "GIT_IOENCODING": "utf-8"}, cwd=cwd)
         if result.returncode != 0:
             return GitDiffResponse(success=False, error=result.stderr.strip())
         output = result.stdout.strip()
@@ -381,17 +399,19 @@ def git_diff(file_path: Optional[str] = None, staged: bool = False) -> GitDiffRe
 class GitLogInput(BaseModel):
     count: int = Field(default=10, ge=1, le=50, description="显示的提交数量")
     file_path: Optional[str] = Field(default=None, description="限制显示指定文件的提交历史")
+    cwd: Optional[str] = Field(default=None, description="Git 仓库根目录，为空则使用当前工作目录")
 
 
 @tool("git_log", args_schema=GitLogInput)
-def git_log(count: int = 10, file_path: Optional[str] = None) -> GitLogResponse:
+def git_log(count: int = 10, file_path: Optional[str] = None, cwd: Optional[str] = None) -> GitLogResponse:
     """显示 Git 提交历史。可限制数量和过滤特定文件。"""
-    log.info("git_log: count=%d file_path=%s", count, file_path)
+    log.info("git_log: count=%d file_path=%s cwd=%s", count, file_path, cwd)
     try:
         cmd = ["git", "log", f"-{count}", "--oneline", "--no-decorate"]
         if file_path:
             cmd.extend(["--", file_path])
-        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", timeout=10)
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding=_GIT_ENCODING, timeout=10,
+                                env={**os.environ, "GIT_IOENCODING": "utf-8"}, cwd=cwd)
         if result.returncode != 0:
             return GitLogResponse(success=False, error=result.stderr.strip())
         output = result.stdout.strip()
@@ -415,12 +435,14 @@ class GitBlameInput(BaseModel):
     file_path: str = Field(description="要查看 blame 信息的文件路径")
     start_line: Optional[int] = Field(default=None, ge=1, description="起始行号（从 1 开始）")
     end_line: Optional[int] = Field(default=None, ge=1, description="结束行号（包含）")
+    cwd: Optional[str] = Field(default=None, description="Git 仓库根目录，为空则使用当前工作目录")
 
 
 @tool("git_blame", args_schema=GitBlameInput)
-def git_blame(file_path: str, start_line: Optional[int] = None, end_line: Optional[int] = None) -> GitBlameResponse:
+def git_blame(file_path: str, start_line: Optional[int] = None, end_line: Optional[int] = None,
+              cwd: Optional[str] = None) -> GitBlameResponse:
     """显示文件每一行的最后修改者和提交信息，用于追溯代码变更历史。"""
-    log.info("git_blame: file_path=%s lines=%s-%s", file_path, start_line, end_line)
+    log.info("git_blame: file_path=%s lines=%s-%s cwd=%s", file_path, start_line, end_line, cwd)
     try:
         cmd = ["git", "blame", "--porcelain"]
         if start_line and end_line:
@@ -428,7 +450,8 @@ def git_blame(file_path: str, start_line: Optional[int] = None, end_line: Option
         elif start_line:
             cmd.extend(["-L", f"{start_line},+20"])
         cmd.append(file_path)
-        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", timeout=15)
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding=_GIT_ENCODING, timeout=15,
+                                env={**os.environ, "GIT_IOENCODING": "utf-8"}, cwd=cwd)
         if result.returncode != 0:
             return GitBlameResponse(success=False, error=result.stderr.strip())
         authors = {}

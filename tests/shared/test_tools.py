@@ -1,10 +1,12 @@
 """shared/tools.py — 纯函数和 Pydantic 模型测试"""
 
+import sys
 import pytest
+from unittest.mock import patch
 from pydantic import ValidationError
 
 from LangCode.shared.tools import (
-    _extract_user_error,
+    _extract_user_error, _get_shell_encoding, _GIT_ENCODING,
     ReadFileInput, WriteFileInput, EditFileInput,
     SearchFilesInput, RunPythonInput, RunCommandInput,
 )
@@ -73,3 +75,27 @@ class TestPydanticModels:
     def test_run_command_required(self):
         with pytest.raises(ValidationError):
             RunCommandInput()
+
+
+# ============================================================
+#  编码常量与辅助函数测试
+# ============================================================
+
+class TestEncodingHelpers:
+    def test_git_encoding_is_utf8(self):
+        """Git 通过 GIT_IOENCODING 强制 UTF-8，常量必须为 utf-8"""
+        assert _GIT_ENCODING == "utf-8"
+
+    @patch("LangCode.shared.tools._platform.system", return_value="Linux")
+    def test_shell_encoding_linux_returns_utf8(self, _mock):
+        assert _get_shell_encoding() == "utf-8"
+
+    @patch("LangCode.shared.tools._platform.system", return_value="Windows")
+    def test_shell_encoding_windows_returns_system_codepage(self, _mock):
+        enc = _get_shell_encoding()
+        # Windows 中文系统返回 'cp936'，英文系统返回 'cp1252' 等，只需非 utf-8 即可
+        assert enc != "utf-8"
+
+    @patch("LangCode.shared.tools._platform.system", return_value="Darwin")
+    def test_shell_encoding_darwin_returns_utf8(self, _mock):
+        assert _get_shell_encoding() == "utf-8"
