@@ -20,7 +20,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
 from LangCode.agents.supervisor import SupervisorAgent
-from LangCode.shared import llm, all_tools, ast_tools, MCPManager, SessionStore, get_logger
+from LangCode.shared import llm, all_tools, ast_tools, plan_tools, delegate_tools, MCPManager, SessionStore, get_logger
 from LangCode.shared.session import SessionRecord
 from LangCode.shared.command import COMMAND_EXIT, COMMAND_MEMORY, COMMAND_PLAN
 from LangCode.shared.prompts import get_platform_prompt
@@ -96,9 +96,9 @@ def create_agent():
         log.info("MCP: %d/%d 服务器已连接", mcp_status["connected"], mcp_status["total"])
     mcp_tools = mcp_manager.create_langchain_tools()
 
-    # Supervisor 的全量工具（不再包含 plan_create 和 delegate_tools）
+    # Supervisor 的全量工具（plan_create 和 delegate 通过工具调用驱动路由）
     all_tools_full = (
-        all_tools + ast_tools + mcp_tools +
+        all_tools + ast_tools + plan_tools + delegate_tools + mcp_tools +
         [memory_save, memory_search, memory_list]
     )
 
@@ -297,7 +297,7 @@ def _consume_events(graph, events, config):
     _LLM_NODES = {"agent", "synthesize_llm", "report"}
     _TOOL_NODES = {"mode_tools", "tools"}
     _ROUTE_NODES = {"extract_decision"}
-    _PLAN_NODES = {"plan_create", "step_inject", "reflector"}
+    _PLAN_NODES = {"plan_create", "mark_step", "reflector"}
 
     while True:
         interrupted = False

@@ -26,6 +26,10 @@ PLAN_MODE_TOOLS = frozenset({
     "memory_search",
     "memory_list",
     "plan_show",
+    "plan_create",        # 创建计划（执行时自动切换到 build 模式）
+    "delegate_code",      # 委派给子Agent
+    "delegate_research",
+    "delegate_review",
 })
 
 

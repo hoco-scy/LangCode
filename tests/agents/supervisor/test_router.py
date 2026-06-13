@@ -1,140 +1,157 @@
-"""agents/supervisor/router.py — Agent-as-Entry 路由决策测试"""
+"""agents/supervisor/router.py — 工具驱动路由测试"""
 
 from langchain_core.messages import AIMessage
 
 from LangCode.agents.supervisor.router import (
-    AgentDecision, extract_decision_from_agent, plan_create_from_agent,
-    should_create_plan, delegate_routing, MAX_SUPERVISOR_ITERATIONS,
+    process_tool_results, after_tools_routing,
+    _is_newly_created_plan, _is_step_in_progress,
+    MAX_SUPERVISOR_ITERATIONS,
 )
 from LangCode.planning.schema import Plan, PlanStep
 
 
-class TestAgentDecision:
-    def test_schema_fields(self):
-        d = AgentDecision(content="回答", reasoning="简单任务", plan_steps=[])
-        assert d.content == "回答"
-        assert d.reasoning == "简单任务"
-        assert d.plan_steps == []
+class TestProcessToolResults:
+    """从 AI tool_calls 中提取 plan 和 delegate 信号"""
 
-    def test_plan_steps(self):
-        d = AgentDecision(content="", plan_steps=["步骤A", "步骤B"])
-        assert len(d.plan_steps) == 2
-
-
-class TestExtractDecisionFromAgent:
-    def test_tool_calls_returns_react(self):
-        msg = AIMessage(content="", tool_calls=[{"name": "read_file", "args": {}, "id": "tc1"}])
+    def test_plan_create_tool_call(self):
+        msg = AIMessage(content="", tool_calls=[{
+            "name": "plan_create",
+            "args": {"goal": "重构模块", "steps": ["分析代码", "编写实现", "运行测试"]},
+            "id": "tc1",
+        }])
         state = {"messages": [msg]}
-        result = extract_decision_from_agent(state)
-        assert result["route"] == "react"
-
-    def test_plain_text_returns_end(self):
-        msg = AIMessage(content="你好，有什么可以帮助你的？")
-        state = {"messages": [msg]}
-        result = extract_decision_from_agent(state)
-        assert result["route"] == "end"
-
-    def test_plan_steps_returns_plan(self):
-        msg = AIMessage(content="执行计划：\n1. 步骤A\n2. 步骤B")
-        msg._plan_steps = ["步骤A", "步骤B"]
-        state = {"messages": [msg]}
-        result = extract_decision_from_agent(state)
-        assert result["route"] == "plan"
-        assert result["plan_steps"] == ["步骤A", "步骤B"]
-
-    def test_route_tag_returns_delegate(self):
-        msg = AIMessage(content="[route: code task: 写 hello world] 马上开始")
-        state = {"messages": [msg]}
-        result = extract_decision_from_agent(state)
-        assert result["route"] == "code"
-        assert "写 hello world" in result["task_description"]
-
-    def test_research_route_tag(self):
-        msg = AIMessage(content="[route: research task: 分析代码结构]")
-        state = {"messages": [msg]}
-        result = extract_decision_from_agent(state)
-        assert result["route"] == "research"
-
-    def test_review_route_tag(self):
-        msg = AIMessage(content="[route: review task: 审查安全性]")
-        state = {"messages": [msg]}
-        result = extract_decision_from_agent(state)
-        assert result["route"] == "review"
-
-    def test_empty_messages_returns_end(self):
-        state = {"messages": []}
-        result = extract_decision_from_agent(state)
-        assert result["route"] == "end"
-
-    def test_plan_steps_via_additional_kwargs(self):
-        msg = AIMessage(content="计划如下")
-        msg.additional_kwargs = {"plan_steps": ["步骤1", "步骤2"]}
-        state = {"messages": [msg]}
-        result = extract_decision_from_agent(state)
-        assert result["route"] == "plan"
-        assert result["plan_steps"] == ["步骤1", "步骤2"]
-
-
-class TestPlanCreateFromAgent:
-    def test_creates_plan_from_steps(self):
-        state = {
-            "plan_steps": ["分析代码", "编写实现", "运行测试"],
-            "task_description": "重构模块",
-        }
-        result = plan_create_from_agent(state)
+        result = process_tool_results(state)
         assert "current_plan" in result
         plan = Plan(**result["current_plan"])
         assert plan.goal == "重构模块"
         assert len(plan.steps) == 3
-        assert plan.steps[0].description == "分析代码"
         assert result["agent_mode"] == "build"
 
-    def test_empty_steps_returns_empty(self):
-        state = {"plan_steps": [], "task_description": ""}
-        result = plan_create_from_agent(state)
+    def test_delegate_code_tool_call(self):
+        msg = AIMessage(content="", tool_calls=[{
+            "name": "delegate_code",
+            "args": {"task": "写 hello world"},
+            "id": "tc2",
+        }])
+        state = {"messages": [msg]}
+        result = process_tool_results(state)
+        assert result["route"] == "code"
+        assert result["task_description"] == "写 hello world"
+
+    def test_delegate_research_tool_call(self):
+        msg = AIMessage(content="", tool_calls=[{
+            "name": "delegate_research",
+            "args": {"task": "分析代码结构"},
+            "id": "tc3",
+        }])
+        state = {"messages": [msg]}
+        result = process_tool_results(state)
+        assert result["route"] == "research"
+
+    def test_delegate_review_tool_call(self):
+        msg = AIMessage(content="", tool_calls=[{
+            "name": "delegate_review",
+            "args": {"task": "审查安全性"},
+            "id": "tc4",
+        }])
+        state = {"messages": [msg]}
+        result = process_tool_results(state)
+        assert result["route"] == "review"
+
+    def test_normal_tool_call_no_signal(self):
+        msg = AIMessage(content="", tool_calls=[{
+            "name": "read_file",
+            "args": {"file_path": "test.py"},
+            "id": "tc5",
+        }])
+        state = {"messages": [msg]}
+        result = process_tool_results(state)
         assert result == {}
 
-    def test_missing_steps_returns_empty(self):
-        state = {"task_description": "任务"}
-        result = plan_create_from_agent(state)
+    def test_plan_and_delegate_combined(self):
+        """一个 tool_calls 中同时包含 plan_create 和其他工具"""
+        msg = AIMessage(content="", tool_calls=[
+            {"name": "plan_create", "args": {"goal": "X", "steps": ["A", "B"]}, "id": "tc1"},
+            {"name": "read_file", "args": {"file_path": "x.py"}, "id": "tc2"},
+        ])
+        state = {"messages": [msg]}
+        result = process_tool_results(state)
+        assert "current_plan" in result
+
+    def test_no_tool_calls(self):
+        msg = AIMessage(content="直接回复")
+        state = {"messages": [msg]}
+        result = process_tool_results(state)
+        assert result == {}
+
+    def test_empty_messages(self):
+        state = {"messages": []}
+        result = process_tool_results(state)
         assert result == {}
 
 
-class TestShouldCreatePlan:
-    def test_plan_route_with_steps(self):
-        state = {"route": "plan", "plan_steps": ["A", "B"]}
-        assert should_create_plan(state) == "plan_create"
+class TestAfterToolsRouting:
+    """mode_tools + process_tool_results 后路由"""
 
-    def test_plan_route_without_steps(self):
-        state = {"route": "plan", "plan_steps": []}
-        assert should_create_plan(state) == "__end__"
+    def test_newly_created_plan_goes_to_mark_step(self, sample_plan):
+        """刚创建的计划（所有步骤 pending）→ mark_step"""
+        state = {"messages": [], "current_plan": sample_plan.model_dump(), "route": ""}
+        assert after_tools_routing(state) == "mark_step"
 
-    def test_react_route(self):
-        state = {"route": "react"}
-        assert should_create_plan(state) == "__end__"
+    def test_delegate_goes_to_delegate(self):
+        state = {"messages": [], "current_plan": None, "route": "code"}
+        assert after_tools_routing(state) == "delegate"
 
-    def test_end_route(self):
-        state = {"route": "end"}
-        assert should_create_plan(state) == "__end__"
+    def test_delegate_research(self):
+        state = {"messages": [], "current_plan": None, "route": "research"}
+        assert after_tools_routing(state) == "delegate"
+
+    def test_plan_step_in_progress_goes_to_reflector(self, sample_plan):
+        sample_plan.steps[0].status = "in_progress"
+        state = {"messages": [], "current_plan": sample_plan.model_dump(), "route": ""}
+        assert after_tools_routing(state) == "reflector"
+
+    def test_no_signals_goes_to_agent(self):
+        state = {"messages": [], "current_plan": None, "route": ""}
+        assert after_tools_routing(state) == "agent"
+
+    def test_completed_plan_goes_to_agent(self, sample_plan):
+        sample_plan.status = "completed"
+        state = {"messages": [], "current_plan": sample_plan.model_dump(), "route": ""}
+        assert after_tools_routing(state) == "agent"
 
 
-class TestDelegateRouting:
-    def test_code_route(self):
-        state = {"route": "code"}
-        assert delegate_routing(state) == "code_agent"
+class TestIsNewlyCreatedPlan:
+    def test_all_pending(self, sample_plan):
+        assert _is_newly_created_plan(sample_plan.model_dump()) is True
 
-    def test_research_route(self):
-        state = {"route": "research"}
-        assert delegate_routing(state) == "research_agent"
+    def test_step_in_progress(self, sample_plan):
+        sample_plan.steps[0].status = "in_progress"
+        assert _is_newly_created_plan(sample_plan.model_dump()) is False
 
-    def test_review_route(self):
-        state = {"route": "review"}
-        assert delegate_routing(state) == "review_agent"
+    def test_completed_plan(self, sample_plan):
+        sample_plan.status = "completed"
+        assert _is_newly_created_plan(sample_plan.model_dump()) is False
 
-    def test_react_route_returns_end(self):
-        state = {"route": "react"}
-        assert delegate_routing(state) == "__end__"
+    def test_single_step_plan(self):
+        plan = Plan(goal="g", steps=[PlanStep(step_id=1, description="s")])
+        assert _is_newly_created_plan(plan.model_dump()) is False
 
-    def test_end_route(self):
-        state = {"route": "end"}
-        assert delegate_routing(state) == "__end__"
+    def test_invalid_data(self):
+        assert _is_newly_created_plan({}) is False
+
+
+class TestIsStepInProgress:
+    def test_in_progress(self, sample_plan):
+        sample_plan.steps[0].status = "in_progress"
+        assert _is_step_in_progress(sample_plan.model_dump()) is True
+
+    def test_all_pending(self, sample_plan):
+        assert _is_step_in_progress(sample_plan.model_dump()) is False
+
+    def test_completed_plan(self, sample_plan):
+        sample_plan.status = "completed"
+        assert _is_step_in_progress(sample_plan.model_dump()) is False
+
+    def test_invalid_data(self):
+        assert _is_step_in_progress({}) is False

@@ -1,14 +1,10 @@
-"""agents/supervisor/graph.py — 混合范式路由函数测试"""
+"""agents/supervisor/graph.py — 工具驱动路由图测试"""
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.constants import END
 
 from LangCode.agents.supervisor.graph import (
-    _increment_retry,
-    _unified_agent_routing,
-    _after_tools_routing,
-    _step_inject,
-    _plan_create_routing,
+    _mark_step_in_progress,
     _reflect_routing,
     SupervisorAgent,
 )
@@ -16,83 +12,36 @@ from LangCode.agents.supervisor.router import MAX_SUPERVISOR_ITERATIONS
 from LangCode.planning.schema import Plan, PlanStep
 
 
-class TestIncrementRetry:
-    def test_increments_from_zero(self):
-        assert _increment_retry({"tool_retry_count": 0}) == {"tool_retry_count": 1}
+class TestMarkStepInProgress:
+    def test_marks_pending_step_to_in_progress(self, sample_plan):
+        """新建计划后，第一个步骤应从 pending 变为 in_progress"""
+        state = {"current_plan": sample_plan.model_dump()}
+        result = _mark_step_in_progress(state)
+        plan = Plan(**result["current_plan"])
+        assert plan.steps[0].status == "in_progress"
 
-    def test_defaults_to_zero(self):
-        assert _increment_retry({}) == {"tool_retry_count": 1}
+    def test_no_plan_returns_empty(self):
+        assert _mark_step_in_progress({"current_plan": None}) == {}
 
-
-class TestUnifiedAgentRouting:
-    """统一路由：agent 响应后的路由决策"""
-
-    def test_tool_calls_goes_to_tools(self, ai_tool_message):
-        state = {"messages": [ai_tool_message], "current_plan": None}
-        assert _unified_agent_routing(state) == "mode_tools"
-
-    def test_plan_steps_goes_to_plan_create(self):
-        msg = AIMessage(content="计划：\n1. A\n2. B")
-        state = {"messages": [msg], "current_plan": None, "route": "plan", "plan_steps": ["A", "B"]}
-        assert _unified_agent_routing(state) == "plan_create"
-
-    def test_delegate_code_route(self):
-        msg = AIMessage(content="[route: code task: 写代码]")
-        state = {"messages": [msg], "current_plan": None, "route": "code"}
-        assert _unified_agent_routing(state) == "delegate"
-
-    def test_delegate_research_route(self):
-        msg = AIMessage(content="")
-        state = {"messages": [msg], "current_plan": None, "route": "research"}
-        assert _unified_agent_routing(state) == "delegate"
-
-    def test_in_plan_execution_goes_to_reflector(self, ai_plain_message, sample_plan):
-        sample_plan.steps[0].status = "in_progress"
-        state = {"messages": [ai_plain_message], "current_plan": sample_plan.model_dump()}
-        assert _unified_agent_routing(state) == "reflector"
-
-    def test_no_signals_goes_to_end(self, ai_plain_message):
-        state = {"messages": [ai_plain_message], "current_plan": None, "route": "end"}
-        assert _unified_agent_routing(state) == END
-
-    def test_completed_plan_goes_to_end(self, ai_plain_message, sample_plan):
-        sample_plan.status = "completed"
-        state = {"messages": [ai_plain_message], "current_plan": sample_plan.model_dump()}
-        assert _unified_agent_routing(state) == END
-
-
-class TestAfterToolsRouting:
-    def test_plan_step_in_progress_goes_to_reflector(self, sample_plan):
+    def test_already_in_progress_no_change(self, sample_plan):
         sample_plan.steps[0].status = "in_progress"
         state = {"current_plan": sample_plan.model_dump()}
-        assert _after_tools_routing(state) == "reflector"
+        result = _mark_step_in_progress(state)
+        plan = Plan(**result["current_plan"])
+        assert plan.steps[0].status == "in_progress"
 
-    def test_no_plan_goes_to_agent(self):
-        state = {"current_plan": None}
-        assert _after_tools_routing(state) == "agent"
-
-    def test_completed_plan_goes_to_agent(self, sample_plan):
-        sample_plan.status = "completed"
-        state = {"current_plan": sample_plan.model_dump()}
-        assert _after_tools_routing(state) == "agent"
-
-
-class TestPlanCreateRouting:
-    def test_active_plan_goes_to_step_inject(self, sample_plan):
-        state = {"current_plan": sample_plan.model_dump()}
-        assert _plan_create_routing(state) == "step_inject"
-
-    def test_no_plan_goes_to_end(self):
-        state = {"current_plan": None}
-        assert _plan_create_routing(state) == END
+    def test_all_done_returns_empty(self, sample_plan):
+        sample_plan.current_step = len(sample_plan.steps)
+        result = _mark_step_in_progress({"current_plan": sample_plan.model_dump()})
+        assert result == {}
 
 
 class TestReflectRouting:
-    def test_more_steps_goes_to_step_inject(self, sample_plan):
+    def test_more_steps_goes_to_mark_step(self, sample_plan):
         sample_plan.steps[0].status = "done"
         sample_plan.current_step = 1
         state = {"current_plan": sample_plan.model_dump()}
-        assert _reflect_routing(state) == "step_inject"
+        assert _reflect_routing(state) == "mark_step"
 
     def test_completed_plan_goes_to_end(self, sample_plan):
         sample_plan.status = "completed"
@@ -116,35 +65,40 @@ class TestReflectRouting:
         assert _reflect_routing(state) == END
 
 
-class TestStepInject:
-    def test_injects_step_prompt(self, sample_plan):
-        state = {"current_plan": sample_plan.model_dump(), "messages": []}
-        result = _step_inject(state)
-        assert len(result["messages"]) == 1
-        assert "第 1/3" in result["messages"][0].content
-
-    def test_no_plan_returns_empty(self):
-        assert _step_inject({"current_plan": None}) == {}
-
-    def test_all_done_returns_empty(self, sample_plan):
-        sample_plan.current_step = len(sample_plan.steps)
-        assert _step_inject({"current_plan": sample_plan.model_dump()}) == {}
-
-
 class TestInjectContext:
     def _make_agent(self):
         from unittest.mock import MagicMock
         return SupervisorAgent(llm=MagicMock(), sys_checkpoint=None, sys_tools=[])
 
-    def test_injects_active_plan(self):
+    def test_injects_step_execution_prompt(self):
+        """有 in_progress 步骤时注入执行指令"""
         agent = self._make_agent()
-        plan = Plan(goal="X", steps=[PlanStep(step_id=1, description="Y")])
+        plan = Plan(goal="X", steps=[
+            PlanStep(step_id=1, description="Y", status="in_progress")
+        ])
         result = agent._inject_context({"messages": [], "current_plan": plan.model_dump()})
         assert len(result) == 1
-        assert "X" in result[0].content
+        assert "执行计划" in result[0].content
+        assert "第 1 步" in result[0].content
+
+    def test_injects_pending_step_prompt(self):
+        """有 pending 步骤时注入下一步提示"""
+        agent = self._make_agent()
+        plan = Plan(goal="X", steps=[
+            PlanStep(step_id=1, description="Y")
+        ])
+        result = agent._inject_context({"messages": [], "current_plan": plan.model_dump()})
+        assert len(result) == 1
+        assert "下一步" in result[0].content
 
     def test_empty_when_no_plan(self):
         assert self._make_agent()._inject_context({"messages": [], "current_plan": None}) == []
+
+    def test_empty_when_plan_completed(self):
+        plan = Plan(goal="X", steps=[], status="completed")
+        assert self._make_agent()._inject_context({
+            "messages": [], "current_plan": plan.model_dump()
+        }) == []
 
 
 class TestGetAgentPrompt:
