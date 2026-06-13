@@ -294,8 +294,10 @@ def _consume_events(graph, events, config):
     """处理事件流：流式打印 LLM 输出、工具调用与结果、中断恢复"""
     log.debug("开始消费事件流")
 
-    _LLM_NODES = {"agent", "supervisor", "synthesize_llm", "report"}
+    _LLM_NODES = {"agent", "synthesize_llm", "report"}
     _TOOL_NODES = {"mode_tools", "tools"}
+    _ROUTE_NODES = {"extract_decision"}
+    _PLAN_NODES = {"plan_create", "step_inject", "reflector"}
 
     while True:
         interrupted = False
@@ -329,14 +331,14 @@ def _consume_events(graph, events, config):
                                 print(f"\n[工具结果] {tool_name}: {preview}", flush=True)
                                 log.debug("工具结果: %s -> %s", tool_name, preview[:200])
 
-                        elif key == "supervisor":
-                            # supervisor 路由决策
+                        elif key in _ROUTE_NODES:
                             route = data[key].get("route", "")
-                            reasoning = data[key].get("reasoning", "")
-                            mode_val = data[key].get("agent_mode", "build")
                             if route:
-                                print(f"\n[路由] → {route} (模式: {mode_val})", flush=True)
-                                log.info("supervisor 路由: %s (mode=%s)", route, mode_val)
+                                print(f"\n[路由] → {route}", flush=True)
+                                log.info("agent 路由决策: %s", route)
+
+                        elif key in _PLAN_NODES:
+                            print(f"\n[计划] {key}", flush=True)
 
                     if "__interrupt__" in data:
                         interrupt_info = data["__interrupt__"]

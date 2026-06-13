@@ -1,22 +1,20 @@
-# 主智能体 —— 中枢路由架构
+# 主智能体 —— Agent-as-Entry 架构
 #
-# 图结构（回环模式）：
-#   START → supervisor(中枢路由) → conditional:
-#     "react"    → agent
-#     "plan"     → planner → step_inject → agent → ... → reflector → supervisor
-#     "code"     → code_agent → supervisor
-#     "research" → research_agent → supervisor
-#     "review"   → review_agent → supervisor
-#     "end"      → END
+# 图结构：
+#   START → agent(唯一入口) → conditional:
+#     有 tool_calls → mode_tools → retry_tracker → agent (ReAct 循环)
+#     有 plan_steps → plan_create → step_inject → agent → ... → reflector → ... → END
+#     有 route 标签 → delegate → 子Agent → END
+#     否则 → END
 #
-# 关键设计：agent 节点被 react 和 plan 路径共享。
-# agent 后的路由由统一的 _agent_routing 函数处理：
-#   - 有 tool_calls → mode_tools
-#   - 在 plan 执行中 + 无 tool_calls → reflector
-#   - 不在 plan 执行中 + 无 tool_calls → supervisor
+# 核心优化：去掉了 supervisor 路由节点，agent 的第一次 LLM 调用
+# 同时完成思考和路由决策，省去一次额外的 LLM 调用。
 #
-# 每条子路径完成后回到 supervisor，由 supervisor 决定下一步。
-# 最大迭代保护：超过 MAX_SUPERVISOR_ITERATIONS 强制结束。
+# 路由信号（按优先级）：
+# 1. tool_calls → ReAct 循环（tools 路径）
+# 2. plan_steps → Plan-and-Execute 路径
+# 3. [route: code|research|review] 标签 → Delegate 路径
+# 4. 无以上信号 → END（直接回复用户）
 
 from typing import Literal
 
@@ -34,7 +32,8 @@ from LangCode.shared.mode_tools import ModeAwareToolNode
 from LangCode.agents.base import BaseAgent
 from LangCode.agents.supervisor.prompts import AGENT_PROMPT
 from LangCode.agents.supervisor.router import (
-    supervisor_node, supervisor_routing, MAX_SUPERVISOR_ITERATIONS,
+    extract_decision_from_agent, plan_create_from_agent, should_create_plan,
+    delegate_routing, MAX_SUPERVISOR_ITERATIONS,
 )
 from LangCode.planning.schema import Plan
 
@@ -48,6 +47,12 @@ log = get_logger("supervisor.graph")
 def _increment_retry(state: LCState) -> dict:
     """工具执行后递增重试计数"""
     return {"tool_retry_count": state.get("tool_retry_count", 0) + 1}
+
+
+def _extract_decision_node(state: LCState) -> dict:
+    """路由提取节点：从 agent 响应中提取路由决策，写入 state"""
+    updates = extract_decision_from_agent(state)
+    return updates
 
 
 def _step_inject(state: LCState) -> dict:
@@ -88,16 +93,24 @@ def _step_inject(state: LCState) -> dict:
     }
 
 
+def _delegate_inject(state: LCState) -> dict:
+    """Delegate 路径：为子 Agent 注入任务上下文"""
+    task = state.get("task_description", "")
+    if task:
+        return {"messages": [HumanMessage(content=task)]}
+    return {}
+
+
 # ============================================================
 #  统一路由函数
 # ============================================================
 
 def _agent_routing(state: LCState) -> Literal["mode_tools", "reflector", "__end__"]:
-    """agent 后的统一路由：根据 state 判断下一步
+    """agent 后的路由（ReAct 循环内）
 
-    - 有 tool_calls → mode_tools（继续 ReAct 循环）
-    - 在 plan 执行流程中 + 无 tool_calls → reflector（评估步骤结果）
-    - 否则 → END（react 路径完成，直接返回结果给用户）
+    - 有 tool_calls → mode_tools
+    - 在 plan 执行中 + 无 tool_calls → reflector
+    - 否则 → END（react 完成）
     """
     last_message = state["messages"][-1]
     has_tool_calls = isinstance(last_message, AIMessage) and last_message.tool_calls
@@ -115,54 +128,53 @@ def _agent_routing(state: LCState) -> Literal["mode_tools", "reflector", "__end_
         except Exception:
             pass
 
-    # react 路径完成 → 直接结束，不回 supervisor
     return END
 
 
 def _after_tools(state: LCState) -> Literal["agent", "supervisor"]:
-    """retry_tracker 后路由：回到 agent 继续循环，或回 supervisor（迭代保护）"""
+    """retry_tracker 后路由：回到 agent 继续循环，或超限保护"""
     iterations = state.get("supervisor_iterations", 0)
     if iterations > MAX_SUPERVISOR_ITERATIONS:
-        return "supervisor"
+        return "__end__"
 
     return "agent"
 
 
-def _plan_ready(state: LCState) -> Literal["step_inject", "supervisor"]:
-    """planner 后路由：计划就绪 → step_inject，失败/空 → supervisor"""
+def _plan_ready(state: LCState) -> Literal["step_inject", "__end__"]:
+    """plan_create 后路由：计划就绪 → step_inject，失败 → END"""
     plan_data = state.get("current_plan")
     if not plan_data:
-        return "supervisor"
+        return END
     try:
         plan = Plan(**plan_data)
         if plan.status == "active" and plan.current():
             return "step_inject"
     except Exception:
         pass
-    return "supervisor"
+    return END
 
 
-def _reflect_done(state: LCState) -> Literal["step_inject", "supervisor"]:
-    """reflector 后路由：计划有更多步骤 → step_inject，完成/放弃 → supervisor"""
+def _reflect_done(state: LCState) -> Literal["step_inject", "__end__"]:
+    """reflector 后路由：更多步骤 → step_inject，完成 → END"""
     plan_data = state.get("current_plan")
     if not plan_data:
-        return "supervisor"
+        return END
     try:
         plan = Plan(**plan_data)
     except Exception:
-        return "supervisor"
+        return END
 
     if plan.status in ("completed", "abandoned"):
-        return "supervisor"
+        return END
 
     if plan.reflection and "需要调整" in (plan.reflection or ""):
-        return "supervisor"
+        return END
 
     current = plan.current()
     if current and current.status in ("pending", "in_progress"):
         return "step_inject"
 
-    return "supervisor"
+    return END
 
 
 # ============================================================
@@ -171,7 +183,7 @@ def _reflect_done(state: LCState) -> Literal["step_inject", "supervisor"]:
 
 class SupervisorAgent(BaseAgent):
     name = "supervisor"
-    description = "主控 Agent：中枢路由编排多 Agent 协作，支持 ReAct + Plan-and-Execute"
+    description = "主控 Agent：Agent-as-Entry 架构，一次 LLM 调用完成思考+路由"
 
     def __init__(self, llm: ChatOpenAI, sys_checkpoint: Checkpointer, sys_tools: list[BaseTool],
                  sub_agents: dict = None):
@@ -195,74 +207,92 @@ class SupervisorAgent(BaseAgent):
         return []
 
     def build_graph(self) -> CompiledStateGraph:
-        """构建中枢路由架构图"""
-        from LangCode.planning.planner import create_plan_node
-        from LangCode.planning.reflector import reflect_node
+        """构建 Agent-as-Entry 架构图
 
+        agent 是唯一入口，agent 响应后由路由提取节点决定路径。
+        """
         builder = StateGraph(LCState)
         mode_tool_node = ModeAwareToolNode(tools=self.tools)
 
-        # === 中枢路由节点 ===
-        builder.add_node("supervisor", lambda state: supervisor_node(state, self.llm))
-
-        # === 共享节点 ===
+        # === 核心节点 ===
         builder.add_node("agent", self._call_llm)
+        builder.add_node("extract_decision", _extract_decision_node)
         builder.add_node("mode_tools", mode_tool_node)
         builder.add_node("retry_tracker", _increment_retry)
 
-        # === Plan 路径专用节点 ===
-        builder.add_node("planner", lambda state: create_plan_node(state, self.llm))
+        # === Plan 路径 ===
+        builder.add_node("plan_create", plan_create_from_agent)
         builder.add_node("step_inject", _step_inject)
-        builder.add_node("reflector", lambda state: reflect_node(state, self.llm))
+        builder.add_node("reflector", lambda state: self._reflect_node(state))
 
-        # === 子 Agent 节点 ===
-        for name, agent in self.sub_agents.items():
-            builder.add_node(f"{name}_agent", agent.get_graph())
+        # === Delegate 路径（在条件分支中按需创建）===
 
         # === 图连接 ===
 
-        # 入口
-        builder.add_edge(START, "supervisor")
+        # 入口：agent 是唯一入口
+        builder.add_edge(START, "agent")
 
-        # supervisor 条件路由（动态构建路由映射，仅包含存在的子Agent节点）
-        supervisor_routes = {
-            "react": "agent",
-            "plan": "planner",
-            "end": END,
-        }
-        for name in self.sub_agents:
-            supervisor_routes[name] = f"{name}_agent"
+        # agent → 路由提取 → 条件路由
+        builder.add_edge("agent", "extract_decision")
 
-        # supervisor_routing 需要根据可用子Agent动态返回有效路由
-        available_sub_agents = set(self.sub_agents.keys())
-        def _dynamic_supervisor_routing(state: LCState) -> str:
-            route = supervisor_routing(state)
-            # 如果路由指向不可用的子Agent，回退到 react
-            if route in available_sub_agents:
-                return route
-            if route in supervisor_routes:
-                return route
-            return "react"
+        # extract_decision 后：检查 plan_steps 和 delegate
+        if self.sub_agents:
+            # 有子 Agent → 先检查 plan，再检查 delegate，最后 END
+            builder.add_conditional_edges("extract_decision", should_create_plan, {
+                "plan_create": "plan_create",
+                "__end__": "_check_delegate",
+            })
 
-        builder.add_conditional_edges("supervisor", _dynamic_supervisor_routing, supervisor_routes)
+            # delegate 检查（空路由节点）
+            builder.add_node("_check_delegate", lambda state: {})
+            builder.add_conditional_edges("_check_delegate", delegate_routing, {
+                **{f"{n}_agent": f"{n}_agent" for n in self.sub_agents},
+                "__end__": END,
+            })
 
-        # --- agent 统一路由 ---
-        builder.add_conditional_edges("agent", _agent_routing)
+            # delegate 路径
+            builder.add_node("delegate_inject", _delegate_inject)
+            for name, agent_obj in self.sub_agents.items():
+                builder.add_node(f"{name}_agent", agent_obj.get_graph())
+            for name in self.sub_agents:
+                builder.add_edge("delegate_inject", f"{name}_agent")
+                builder.add_edge(f"{name}_agent", END)
+        else:
+            # 无子 Agent → plan 或 END
+            builder.add_conditional_edges("extract_decision", should_create_plan, {
+                "plan_create": "plan_create",
+                "__end__": END,
+            })
 
-        # --- 工具执行 → retry → agent ---
+        # --- ReAct 路径（agent 有 tool_calls 时）---
+        builder.add_conditional_edges("agent", _agent_routing, {
+            "mode_tools": "mode_tools",
+            "reflector": "reflector",  # plan 执行中的步骤完成后
+            "__end__": END,
+        })
         builder.add_edge("mode_tools", "retry_tracker")
-        builder.add_conditional_edges("retry_tracker", _after_tools)
+        builder.add_conditional_edges("retry_tracker", _after_tools, {
+            "agent": "agent",
+            "__end__": END,
+        })
 
         # --- Plan 路径 ---
-        builder.add_conditional_edges("planner", _plan_ready)
-        builder.add_edge("step_inject", "agent")
-        builder.add_conditional_edges("reflector", _reflect_done)
-
-        # --- 子 Agent 回环 ---
-        for name in self.sub_agents:
-            builder.add_edge(f"{name}_agent", "supervisor")
+        builder.add_conditional_edges("plan_create", _plan_ready, {
+            "step_inject": "step_inject",
+            "__end__": END,
+        })
+        builder.add_edge("step_inject", "agent")  # 步骤执行通过 agent
+        builder.add_conditional_edges("reflector", _reflect_done, {
+            "step_inject": "step_inject",
+            "__end__": END,
+        })
 
         return builder.compile(checkpointer=self.checkpoint)
+
+    def _reflect_node(self, state: LCState) -> dict:
+        """反思节点：评估步骤执行结果"""
+        from LangCode.planning.reflector import reflect_node
+        return reflect_node(state, self.llm)
 
     @staticmethod
     def get_agent_prompt():
