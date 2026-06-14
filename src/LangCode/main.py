@@ -38,11 +38,10 @@ from LangCode.agents.graph_builder import (
 from LangCode.agents.prompts import get_platform_prompt
 from LangCode.shared.logger import get_logger
 
-# v1 保留模块（逐步迁移）
-from LangCode.shared.tools import all_tools
-from LangCode.shared.ast_tools import ast_tools
-from LangCode.shared import SessionStore
-from LangCode.shared.session import SessionRecord
+# 工具系统
+from LangCode.tools.builtin import all_tools
+from LangCode.tools.ast import ast_tools
+from LangCode.state.session import SessionStore, SessionRecord
 from LangCode.memory.store import SQLiteMemoryStore
 from LangCode.memory.manager import MemoryManager
 from LangCode.memory.tools import create_memory_tools
@@ -119,7 +118,7 @@ def create_engine(workspace_dir: str = None) -> QueryEngine:
 
     # ── 5c. MCP 工具 ──
     try:
-        from LangCode.shared.mcp_client import MCPManager
+        from LangCode.tools.mcp import MCPManager
         mcp_manager = MCPManager()
         mcp_status = mcp_manager.connect_all()
         if mcp_status["connected"] > 0:

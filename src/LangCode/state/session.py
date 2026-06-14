@@ -14,7 +14,7 @@ from typing import Optional
 from pydantic import BaseModel, Field
 from LangCode.shared.logger import get_logger
 
-log = get_logger("shared.session")
+log = get_logger("state.session")
 
 
 class SessionRecord(BaseModel):

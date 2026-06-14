@@ -2,23 +2,6 @@
 
 支持连接外部 MCP 服务器，发现工具并注册为 LangChain 工具。
 配置文件：.langcode/mcp.json
-
-配置格式：
-{
-  "servers": {
-    "filesystem": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/dir"],
-      "description": "文件系统访问工具"
-    },
-    "github": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-github"],
-      "env": {"GITHUB_TOKEN": "xxx"},
-      "description": "GitHub 操作工具"
-    }
-  }
-}
 """
 
 import json
@@ -32,9 +15,8 @@ from pydantic import BaseModel, Field, create_model
 
 from LangCode.shared.logger import get_logger
 
-log = get_logger("mcp_client")
+log = get_logger("tools.mcp.client")
 
-# MCP 配置文件路径
 MCP_CONFIG_PATH = str(Path.home() / ".langcode" / "mcp.json")
 
 
@@ -72,7 +54,6 @@ class MCPServerConnection:
             from mcp import ClientSession, StdioServerParameters
             from mcp.client.stdio import stdio_client
 
-            # 准备环境变量
             env = dict(os.environ)
             if self.env:
                 env.update(self.env)
@@ -85,17 +66,14 @@ class MCPServerConnection:
 
             log.info("MCP 连接: %s (%s %s)", self.name, self.command, " ".join(self.args[:3]))
 
-            # 使用 stdio 传输连接
             self._stdio_ctx = stdio_client(server_params)
             read_stream, write_stream = await self._stdio_ctx.__aenter__()
 
             self._session_ctx = ClientSession(read_stream, write_stream)
             self._session = await self._session_ctx.__aenter__()
 
-            # 初始化
             await self._session.initialize()
 
-            # 发现工具
             tools_result = await self._session.list_tools()
             self._tools = tools_result.tools if hasattr(tools_result, 'tools') else []
 
@@ -117,7 +95,6 @@ class MCPServerConnection:
 
         try:
             result = await self._session.call_tool(tool_name, arguments)
-            # 提取内容
             content_parts = []
             if hasattr(result, 'content'):
                 for item in result.content:
@@ -166,11 +143,7 @@ class MCPServerConnection:
 
 
 def _run_async(coro):
-    """在新线程中运行 async 协程，避免污染主事件循环
-
-    不使用 nest_asyncio（全局猴子补丁有副作用）。
-    在独立线程中创建新的事件循环来运行 async 代码。
-    """
+    """在新线程中运行 async 协程"""
     import threading
     result = None
     error = None
@@ -249,16 +222,14 @@ class MCPManager:
         input_schema = tool_info.get("input_schema", {})
         conn = self.connections[server_name]
 
-        # 从 input schema 提取参数信息
         properties = input_schema.get("properties", {})
         required = input_schema.get("required", [])
 
-        # 构建 Pydantic 输入模型的字段
         fields = {}
         for prop_name, prop_info in properties.items():
             prop_type = prop_info.get("type", "string")
             desc = prop_info.get("description", "")
-            py_type = str  # 默认为字符串
+            py_type = str
             if prop_type == "integer":
                 py_type = int
             elif prop_type == "number":
@@ -271,13 +242,11 @@ class MCPManager:
             else:
                 fields[prop_name] = (Optional[py_type], Field(default=None, description=desc))
 
-        # 使用 pydantic.create_model 动态创建输入模型
         if fields:
             InputModel = create_model(f"{tool_name}_input", **fields)
         else:
             InputModel = BaseModel
 
-        # 创建工具函数
         mcp_tool_name = tool_info['name']
         full_desc = f"[MCP:{server_name}] {tool_desc}"
 

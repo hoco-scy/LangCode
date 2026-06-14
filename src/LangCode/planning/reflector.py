@@ -11,7 +11,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, BaseMessage
 from pydantic import BaseModel, Field
 
-from LangCode.shared.state import LCState
+from LangCode.shared.types import LCState
 from LangCode.shared.logger import get_logger
 from LangCode.planning.schema import Plan
 

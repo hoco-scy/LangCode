@@ -17,13 +17,13 @@ import tree_sitter_python as tspython
 from tree_sitter import Language, Parser, Node
 
 from LangCode.shared.logger import get_logger
-from LangCode.shared.schemas import (
+from LangCode.shared.models import (
     AstInfoResponse, AstFunctionInfo, AstClassInfo,
     AstFindResponse, AstFindResult,
     AstEditResponse,
 )
 
-log = get_logger("ast_editor")
+log = get_logger("tools.ast.editor")
 
 # 全局解析器（线程安全，可复用）
 _parser = Parser(Language(tspython.language()))
@@ -42,7 +42,7 @@ def _parse_file(file_path: str) -> tuple[bytes, Node]:
 
 
 def _find_assignments(node: Node) -> list[Node]:
-    """递归查找赋值节点（模块级函数，避免每次调用 ast_find 重复定义）"""
+    """递归查找赋值节点"""
     found = []
     if node.type == "assignment":
         found.append(node)
@@ -61,7 +61,6 @@ def _find_nodes(root: Node, node_type: str, name: Optional[str] = None) -> list[
                 results.append(root)
         else:
             results.append(root)
-    # 递归子节点
     for child in root.children:
         results.extend(_find_nodes(child, node_type, name))
     return results
@@ -99,7 +98,7 @@ def _replace_in_source(source: bytes, node: Node, new_text: str) -> bytes:
 def _insert_at_line(source: bytes, line: int, text: str, indent: int = 0) -> bytes:
     """在指定行插入文本（line 为 1-based）"""
     lines = source.split(b"\n")
-    idx = line - 1  # 0-based
+    idx = line - 1
     prefix = b" " * indent
     new_line = prefix + text.encode("utf-8")
     lines.insert(idx, new_line)
@@ -163,13 +162,7 @@ def ast_info(file_path: str) -> AstInfoResponse:
 
 
 def ast_find(file_path: str, target_type: str, name: str) -> AstFindResponse:
-    """查找指定的 AST 节点
-
-    Args:
-        file_path: 文件路径
-        target_type: 查找类型 - "function", "class", "method", "variable"
-        name: 要查找的名称
-    """
+    """查找指定的 AST 节点"""
     if not os.path.isfile(file_path):
         return AstFindResponse(success=False, error=f"文件不存在: {file_path}")
 
@@ -228,14 +221,7 @@ def ast_find(file_path: str, target_type: str, name: str) -> AstFindResponse:
 
 
 def ast_rename(file_path: str, old_name: str, new_name: str, scope: str = "all") -> AstEditResponse:
-    """重命名标识符（函数名、类名、变量名、参数名）
-
-    Args:
-        file_path: 文件路径
-        old_name: 原名称
-        new_name: 新名称
-        scope: 范围 - "all"(整个文件) 或 "function:func_name"(指定函数内)
-    """
+    """重命名标识符"""
     if not os.path.isfile(file_path):
         return AstEditResponse(success=False, error=f"文件不存在: {file_path}")
 
@@ -244,7 +230,6 @@ def ast_rename(file_path: str, old_name: str, new_name: str, scope: str = "all")
     except Exception as e:
         return AstEditResponse(success=False, error=f"解析失败: {e}")
 
-    # 确定搜索范围
     if scope.startswith("function:"):
         func_name = scope.split(":", 1)[1]
         func_nodes = _find_nodes(root, "function_definition", func_name)
@@ -258,7 +243,6 @@ def ast_rename(file_path: str, old_name: str, new_name: str, scope: str = "all")
     if not identifiers:
         return AstEditResponse(success=False, error=f"未找到标识符 '{old_name}'")
 
-    # 同时重命名定义节点（function_definition 的 name 字段等）
     definition_nodes = []
     for func_node in _find_nodes(search_root, "function_definition"):
         name_node = func_node.child_by_field_name("name")
@@ -270,7 +254,6 @@ def ast_rename(file_path: str, old_name: str, new_name: str, scope: str = "all")
             definition_nodes.append(name_node)
 
     all_nodes = definition_nodes + identifiers
-    # 去重（按字节位置）
     seen = set()
     unique_nodes = []
     for node in sorted(all_nodes, key=lambda n: n.start_byte):
@@ -279,7 +262,6 @@ def ast_rename(file_path: str, old_name: str, new_name: str, scope: str = "all")
             seen.add(key)
             unique_nodes.append(node)
 
-    # 从后往前替换，避免字节偏移
     new_source = source_bytes
     for node in reversed(unique_nodes):
         new_source = _replace_in_source(new_source, node, new_name)
@@ -295,15 +277,7 @@ def ast_rename(file_path: str, old_name: str, new_name: str, scope: str = "all")
 
 def ast_add_param(file_path: str, func_name: str, param_name: str,
                   default_value: Optional[str] = None, position: int = -1) -> AstEditResponse:
-    """为函数添加参数
-
-    Args:
-        file_path: 文件路径
-        func_name: 函数名
-        param_name: 新参数名
-        default_value: 默认值（如 "None", "'default'"），为 None 则无默认值
-        position: 插入位置（-1 表示追加到末尾，0 表示插入到 self 后面）
-    """
+    """为函数添加参数"""
     if not os.path.isfile(file_path):
         return AstEditResponse(success=False, error=f"文件不存在: {file_path}")
 
@@ -321,17 +295,14 @@ def ast_add_param(file_path: str, func_name: str, param_name: str,
     if not params_node:
         return AstEditResponse(success=False, error=f"函数 '{func_name}' 没有参数列表")
 
-    # 构造新参数文本
     param_text = param_name
     if default_value:
         param_text = f"{param_name}={default_value}"
 
-    # 获取当前参数列表
     current_params = _get_function_params(func_node)
     if any(p.text.decode().split("=")[0].strip().split(":")[0].strip() == param_name for p in current_params):
         return AstEditResponse(success=False, error=f"参数 '{param_name}' 已存在")
 
-    # 构造新的参数列表文本
     param_texts = [p.text.decode() for p in current_params]
     if position == -1:
         param_texts.append(param_text)
@@ -354,14 +325,7 @@ def ast_add_param(file_path: str, func_name: str, param_name: str,
 
 def ast_add_method(file_path: str, class_name: str, method_code: str,
                    position: int = -1) -> AstEditResponse:
-    """在类中添加方法
-
-    Args:
-        file_path: 文件路径
-        class_name: 类名
-        method_code: 方法代码（完整的 def 语句）
-        position: 插入位置（-1 追加到末尾，0 插入到开头）
-    """
+    """在类中添加方法"""
     if not os.path.isfile(file_path):
         return AstEditResponse(success=False, error=f"文件不存在: {file_path}")
 
@@ -379,19 +343,14 @@ def ast_add_method(file_path: str, class_name: str, method_code: str,
     if not body:
         return AstEditResponse(success=False, error=f"类 '{class_name}' 没有方法体")
 
-    # 计算缩进（类体的缩进 + 4 空格）
     class_indent = class_node.start_point[1]
     method_indent = class_indent + 4
 
-    # 确定插入行
     if position == -1:
-        # 插入到最后一个方法之后、类体结束之后
-        insert_line = body.end_point[0] + 2  # end_point[0] 为 0-based，+2 = 后一行 (1-based)
+        insert_line = body.end_point[0] + 2
     else:
-        # 插入到第一个方法之后
-        insert_line = body.start_point[0] + 2  # body 开始后的第二行
+        insert_line = body.start_point[0] + 2
 
-    # 分行插入方法代码
     lines = method_code.strip().split("\n")
     new_source = source_bytes
     for i, line in enumerate(reversed(lines)):
@@ -407,12 +366,7 @@ def ast_add_method(file_path: str, class_name: str, method_code: str,
 
 
 def ast_add_import(file_path: str, import_statement: str) -> AstEditResponse:
-    """在文件顶部添加 import 语句（放在现有 import 之后）
-
-    Args:
-        file_path: 文件路径
-        import_statement: import 语句，如 "from os.path import join"
-    """
+    """在文件顶部添加 import 语句"""
     if not os.path.isfile(file_path):
         return AstEditResponse(success=False, error=f"文件不存在: {file_path}")
 
@@ -421,29 +375,25 @@ def ast_add_import(file_path: str, import_statement: str) -> AstEditResponse:
     except Exception as e:
         return AstEditResponse(success=False, error=f"解析失败: {e}")
 
-    # 检查是否已存在
     for child in root.children:
         if child.type in ("import_statement", "import_from_statement"):
             if child.text.decode().strip() == import_statement.strip():
                 return AstEditResponse(success=False, error=f"import 已存在: {import_statement}")
 
-    # 找到最后一个 import 语句的位置
     last_import_line = 0
     for child in root.children:
         if child.type in ("import_statement", "import_from_statement"):
-            last_import_line = child.end_point[0] + 1  # 1-based
+            last_import_line = child.end_point[0] + 1
 
     if last_import_line == 0:
-        # 没有现有 import，插入到文件开头
         insert_line = 1
     else:
         insert_line = last_import_line + 1
 
     new_source = _insert_at_line(source_bytes, insert_line, import_statement, indent=0)
 
-    # 如果插入位置后面不是空行，添加一个空行
     lines = new_source.split(b"\n")
-    idx = insert_line - 1  # 0-based
+    idx = insert_line - 1
     if idx < len(lines) - 1 and lines[idx + 1].strip():
         lines.insert(idx + 1, b"")
         new_source = b"\n".join(lines)

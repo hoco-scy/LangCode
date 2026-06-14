@@ -155,26 +155,15 @@ def _dummy_schema(name: str):
 # ── 工具注册函数 ──
 
 def register_all_builtin_tools(registry: ToolRegistry) -> None:
-    """注册所有内置工具（tools/builtin/）。
-
-    从旧代码 tools.py 迁移：
-    - read_file, write_file, edit_file → tools/builtin/file_*.py
-    - search_files → tools/builtin/search.py
-    - execute_shell → tools/builtin/shell.py
-    - run_python → tools/builtin/python.py
-    - fetch_api → tools/builtin/web.py
-    """
-    from LangCode.shared.tools import all_tools
+    """注册所有内置工具（tools/builtin/）。"""
+    from LangCode.tools.builtin import all_tools
     registry.register_many(all_tools)
     log.info("已注册 %d 个内置工具", len(all_tools))
 
 
 def register_ast_tools(registry: ToolRegistry) -> None:
-    """注册 AST 结构化编辑工具（tools/ast/）。
-
-    LangCode 差异化功能：tree-sitter 结构化编辑。
-    """
-    from LangCode.shared.ast_tools import ast_tools
+    """注册 AST 结构化编辑工具（tools/ast/）。"""
+    from LangCode.tools.ast import ast_tools
     registry.register_many(ast_tools)
     log.info("已注册 %d 个 AST 工具", len(ast_tools))
 
@@ -189,7 +178,7 @@ def register_plan_tools(registry: ToolRegistry) -> None:
 def register_mcp_tools(registry: ToolRegistry) -> None:
     """注册 MCP 工具（从 ~/.langcode/mcp.json 加载）。"""
     try:
-        from LangCode.shared.mcp_client import MCPManager
+        from LangCode.tools.mcp import MCPManager
         mcp = MCPManager()
         status = mcp.connect_all()
         if status["connected"] > 0:

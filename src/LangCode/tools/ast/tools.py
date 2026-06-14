@@ -5,7 +5,7 @@ from typing import Optional
 from langchain.tools import tool
 from pydantic import BaseModel, Field
 
-from LangCode.shared.ast_editor import (
+from LangCode.tools.ast.editor import (
     ast_info as _ast_info,
     ast_find as _ast_find,
     ast_rename as _ast_rename,
@@ -13,12 +13,12 @@ from LangCode.shared.ast_editor import (
     ast_add_method as _ast_add_method,
     ast_add_import as _ast_add_import,
 )
-from LangCode.shared.schemas import (
+from LangCode.shared.models import (
     AstInfoResponse, AstFindResponse, AstEditResponse,
 )
 from LangCode.shared.logger import get_logger
 
-log = get_logger("ast_tools")
+log = get_logger("tools.ast.tools")
 
 
 class AstInfoInput(BaseModel):

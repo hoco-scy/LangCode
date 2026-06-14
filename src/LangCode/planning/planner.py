@@ -9,7 +9,7 @@ from langchain_core.messages import SystemMessage
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field
 
-from LangCode.shared.state import LCState
+from LangCode.shared.types import LCState
 from LangCode.shared.logger import get_logger
 from LangCode.planning.schema import Plan, PlanStep
 
