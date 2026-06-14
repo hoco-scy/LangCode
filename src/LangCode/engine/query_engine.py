@@ -61,6 +61,11 @@ class QueryEngineConfig:
     memory_manager: Any = None
     session_store: Any = None
     current_session: Any = None
+    tool_registry: Any = None               # ToolRegistry
+    rule_engine: Any = None                 # RuleEngine
+    path_sandbox: Any = None                # PathSandbox
+    tool_context: Any = None                # ToolUseContext
+    analytics: Any = None                   # AnalyticsTracker
 
 
 class QueryEngine:
@@ -168,20 +173,23 @@ class QueryEngine:
 
                 elif mode == "updates":
                     for key in data:
+                        node_data = data[key]
+                        if node_data is None:
+                            continue
+
                         if key in _LLM_NODES:
-                            node_msgs = data[key].get("messages")
+                            node_msgs = node_data.get("messages")
                             if node_msgs:
                                 msgs = node_msgs if isinstance(node_msgs, list) else [node_msgs]
                                 for msg in msgs:
                                     for tc in getattr(msg, "tool_calls", []) or []:
-                                        args_preview = str(tc.get("args", ""))[:300]
                                         yield EngineEvent(
                                             type="tool_call",
                                             data={"name": tc["name"], "args": tc.get("args", {})},
                                         )
 
                         elif key in _TOOL_NODES:
-                            for msg in data[key].get("messages", []):
+                            for msg in node_data.get("messages", []):
                                 tool_name = getattr(msg, "name", "unknown")
                                 content = getattr(msg, "content", "")
                                 preview = content[:500] if isinstance(content, str) else str(content)[:500]
@@ -191,7 +199,7 @@ class QueryEngine:
                                 )
 
                         elif key in _ROUTE_NODES:
-                            route = data[key].get("route", "")
+                            route = node_data.get("route", "")
                             if route:
                                 yield EngineEvent(type="route", data=route)
 
@@ -199,7 +207,7 @@ class QueryEngine:
                             yield EngineEvent(type="plan", data={"node": key})
 
                         elif key in _VERIFY_NODES:
-                            verify_errors = data[key].get("verify_errors")
+                            verify_errors = node_data.get("verify_errors")
                             if verify_errors:
                                 yield EngineEvent(type="verify", data={"status": "fail", "errors": verify_errors})
                             else:

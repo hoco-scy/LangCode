@@ -38,7 +38,7 @@ def auto_verify(state: dict) -> dict:
     files = _extract_modified_python_files(state)
     if not files:
         log.debug("auto_verify: 无 Python 文件被修改，跳过")
-        return {}
+        return {"verify_errors": None}
 
     log.info("auto_verify: 验证 %d 个文件: %s", len(files), files)
 

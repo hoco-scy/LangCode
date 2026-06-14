@@ -21,14 +21,13 @@ import sqlite3
 import uuid
 import platform
 from pathlib import Path
-from datetime import datetime, timezone
 
-from langchain_core.messages import SystemMessage, HumanMessage, AIMessageChunk
+from langchain_core.messages import SystemMessage, HumanMessage
 from langgraph.checkpoint.sqlite import SqliteSaver
 
-# v2 新模块
 from LangCode.services.config import Config
 from LangCode.services.llm import LLMClient
+from LangCode.services.analytics import init_analytics
 from LangCode.state.app_state import init_app_state, get_app_state
 from LangCode.engine.query_engine import QueryEngine, QueryEngineConfig
 from LangCode.agents.definition import EXPLORE_AGENT, REVIEW_AGENT
@@ -37,19 +36,19 @@ from LangCode.agents.graph_builder import (
 )
 from LangCode.agents.prompts import get_platform_prompt
 from LangCode.shared.logger import get_logger
-
-# 工具系统
-from LangCode.tools.builtin import all_tools
-from LangCode.tools.ast import ast_tools
+from LangCode.tools.registry import (
+    ToolRegistry, register_all_builtin_tools, register_ast_tools,
+    register_memory_tools, register_plan_tools, register_mcp_tools,
+)
+from LangCode.tools.context import ToolUseContext
 from LangCode.state.session import SessionStore, SessionRecord
 from LangCode.memory.store import SQLiteMemoryStore
 from LangCode.memory.manager import MemoryManager
-from LangCode.memory.tools import create_memory_tools
-from LangCode.planning.planner import create_plan_tool
+from LangCode.permissions.rules import RuleEngine
+from LangCode.permissions.sandbox import PathSandbox
 
 log = get_logger("main")
 
-# checkpoint 持久化路径
 _CHECKPOINT_DB = str(Path.home() / ".langcode" / "checkpoints.db")
 
 
@@ -74,14 +73,17 @@ def create_engine(workspace_dir: str = None) -> QueryEngine:
     组装顺序（严格按依赖关系）：
     1. Config（分层配置）
     2. AppState（全局 Store）
-    3. LLMClient
-    4. 工具注册（内置 + AST + MCP + 记忆 + 规划）
-    5. 记忆系统
-    6. Checkpoint
-    7. 子图（Explore, Review）
-    8. Supervisor 主图
-    9. SessionStore + SessionRecord
-    10. QueryEngine
+    3. Analytics（遥测）
+    4. LLMClient
+    5. Permission 系统（RuleEngine + PathSandbox）
+    6. 工具注册（ToolRegistry 统一管理）
+    7. 记忆系统
+    8. Checkpoint
+    9. 子图（Explore, Review）
+    10. Supervisor 主图
+    11. SessionStore + SessionRecord
+    12. ToolUseContext
+    13. QueryEngine
     """
     workspace = workspace_dir or os.getcwd()
 
@@ -99,49 +101,54 @@ def create_engine(workspace_dir: str = None) -> QueryEngine:
         agent_mode=config.get_permission_mode(),
     )
 
-    # ── 3. LLM ──
+    # ── 3. Analytics ──
+    analytics = init_analytics()
+
+    # ── 4. LLM ──
     llm_client = LLMClient(config)
     llm = llm_client.primary_model
 
-    # ── 4. 工具组装 ──
-    tools = list(all_tools) + list(ast_tools)
+    # ── 5. 权限系统 ──
+    rule_engine = RuleEngine()
+    rule_engine.load_rules(workspace)
+    path_sandbox = PathSandbox(workspace)
 
-    # ── 5. 记忆系统 ──
+    # ── 6. 工具注册（通过 ToolRegistry 统一管理） ──
+    registry = ToolRegistry()
+    register_all_builtin_tools(registry)
+    register_ast_tools(registry)
+
+    # ── 7. 记忆系统 ──
     memory_store = SQLiteMemoryStore()
     memory_manager = MemoryManager(store=memory_store, llm=llm)
-    memory_save, memory_search, memory_list = create_memory_tools(memory_store, memory_manager)
-    tools.extend([memory_save, memory_search, memory_list])
+    register_memory_tools(registry, memory_store, memory_manager)
 
-    # ── 5b. 规划工具 ──
-    plan_tool = create_plan_tool()
-    tools.append(plan_tool)
+    # ── 7b. 规划工具 ──
+    register_plan_tools(registry)
 
-    # ── 5c. MCP 工具 ──
+    # ── 7c. MCP 工具 ──
     try:
-        from LangCode.tools.mcp import MCPManager
-        mcp_manager = MCPManager()
-        mcp_status = mcp_manager.connect_all()
-        if mcp_status["connected"] > 0:
-            log.info("MCP: %d/%d 服务器已连接", mcp_status["connected"], mcp_status["total"])
-            tools.extend(mcp_manager.create_langchain_tools())
+        register_mcp_tools(registry)
     except Exception as e:
         log.debug("MCP 跳过: %s", e)
-        mcp_manager = None
 
-    # ── 6. Checkpoint ──
+    log.info("工具注册完成: %d 个工具", registry.tool_count)
+
+    # ── 8. Checkpoint ──
     ckpt_conn = sqlite3.connect(_CHECKPOINT_DB, check_same_thread=False)
     checkpointer = SqliteSaver(ckpt_conn)
     checkpointer.setup()
     _ensure_checkpoint_schema(ckpt_conn)
 
-    # ── 7. 子图 ──
-    explore_graph = build_explore_subgraph(llm, tools, checkpointer=checkpointer)
-    review_graph = build_review_subgraph(llm, tools, checkpointer=checkpointer)
+    # ── 9. 子图 ──
+    all_lc_tools = registry.to_langchain_tools(mode="default")
+    explore_graph = build_explore_subgraph(llm, all_lc_tools, checkpointer=checkpointer)
+    review_graph = build_review_subgraph(llm, all_lc_tools, checkpointer=checkpointer)
 
-    # ── 8. Supervisor 主图 ──
+    # ── 10. Supervisor 主图 ──
     supervisor_graph = build_supervisor_graph(
         llm=llm,
-        tools=tools,
+        tools=all_lc_tools,
         checkpointer=checkpointer,
         sub_agent_graphs={
             "explore": explore_graph,
@@ -149,7 +156,7 @@ def create_engine(workspace_dir: str = None) -> QueryEngine:
         },
     )
 
-    # ── 9. 会话管理 ──
+    # ── 11. 会话管理 ──
     session_store = SessionStore()
     session_id = uuid.uuid4().hex[:12]
     current_session = SessionRecord(id=session_id, workspace=workspace)
@@ -158,7 +165,6 @@ def create_engine(workspace_dir: str = None) -> QueryEngine:
     platform_prompt = get_platform_prompt()
 
     # Agent 提示词
-    from LangCode.agents.definition import EXPLORE_AGENT
     agent_prompt = """你是一个编程智能体，也是多 Agent 系统的协调者。
 
 ## 核心行为
@@ -187,7 +193,17 @@ def create_engine(workspace_dir: str = None) -> QueryEngine:
 - 回答简洁准确，必要时附上代码示例
 """
 
-    # ── 10. QueryEngine ──
+    # ── 12. ToolUseContext ──
+    tool_context = ToolUseContext(
+        session_id=session_id,
+        agent_id="supervisor",
+        workspace_dir=workspace,
+        model_name=llm_client.model_name,
+        permission_mode=config.get_permission_mode(),
+        allowed_dirs={workspace},
+    )
+
+    # ── 13. QueryEngine ──
     engine = QueryEngine(QueryEngineConfig(
         workspace_dir=workspace,
         graph=supervisor_graph,
@@ -198,6 +214,11 @@ def create_engine(workspace_dir: str = None) -> QueryEngine:
         memory_manager=memory_manager,
         session_store=session_store,
         current_session=current_session,
+        tool_registry=registry,
+        rule_engine=rule_engine,
+        path_sandbox=path_sandbox,
+        tool_context=tool_context,
+        analytics=analytics,
     ))
 
     return engine

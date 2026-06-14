@@ -52,7 +52,8 @@ def run_repl(engine: QueryEngine) -> None:
             break
 
         if user_input.startswith("/"):
-            handled = _handle_command(engine, user_input)
+            from LangCode.cli.commands import handle_command
+            handled = handle_command(engine, user_input)
             if handled:
                 continue
 
@@ -110,71 +111,6 @@ def _consume_and_print(events) -> None:
 
     except KeyboardInterrupt:
         print("\n[已取消]")
-
-
-def _handle_command(engine: QueryEngine, user_input: str) -> bool:
-    """处理斜杠命令，返回 True 表示已处理。"""
-    cmd = user_input.strip()
-
-    if cmd == "/mode" or cmd == "/mode status":
-        state = engine.get_current_state()
-        # 从 AppState 读取（未来迁移）
-        mode = state.get("agent_mode", "build")
-        print(f"当前权限模式: {mode}")
-        if mode == "plan":
-            print("  可用工具: read_file, search_files, fetch_api, memory_search, memory_list")
-        else:
-            print("  可用工具: 全部（含写操作）")
-        return True
-
-    if cmd == "/mode plan":
-        engine.update_state({"agent_mode": "plan"})
-        print("已切换到 plan（只读）模式。")
-        return True
-
-    if cmd == "/mode build":
-        engine.update_state({"agent_mode": "build"})
-        print("已切换到 build（全权限）模式。")
-        return True
-
-    if cmd == "/session":
-        state = engine.get_current_state()
-        msg_count = len(state.get("messages", []))
-        plan = state.get("current_plan")
-        mode = state.get("agent_mode", "build")
-        plan_info = f", 计划进行中" if plan else ""
-        print(f"当前会话: {msg_count} 条消息{plan_info}, 模式: {mode}")
-        return True
-
-    if cmd == "/plan":
-        from LangCode.planning.schema import Plan
-        state = engine.get_current_state()
-        plan_data = state.get("current_plan")
-        if not plan_data:
-            print("当前没有活跃的执行计划。")
-        else:
-            try:
-                plan = Plan(**plan_data)
-                print(plan.to_display())
-            except Exception as e:
-                print(f"计划数据解析失败: {e}")
-        return True
-
-    if cmd == "/memory":
-        if engine.cfg.memory_store:
-            records = engine.cfg.memory_store.list_all()
-            if not records:
-                print("暂无长期记忆。")
-            else:
-                print(f"共 {engine.cfg.memory_store.count()} 条记忆：")
-                for r in records:
-                    tags = f" [{', '.join(r.tags)}]" if r.tags else ""
-                    print(f"  [{r.memory_type}]{tags} {r.content[:80]}")
-        else:
-            print("记忆系统未初始化。")
-        return True
-
-    return False
 
 
 def _sync_title(engine: QueryEngine) -> None:

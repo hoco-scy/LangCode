@@ -11,11 +11,13 @@ from LangCode.tools.builtin.search import search_files
 from LangCode.tools.builtin.shell import execute_shell
 from LangCode.tools.builtin.python import run_python
 from LangCode.tools.builtin.web import fetch_api
+from LangCode.tools.builtin.git import git_tools
 
-all_tools = [read_file, fetch_api, execute_shell, run_python, write_file, edit_file, search_files]
+all_tools = [read_file, fetch_api, execute_shell, run_python, write_file, edit_file, search_files] + git_tools
 
 __all__ = [
     "read_file", "write_file", "edit_file",
     "search_files", "execute_shell", "run_python", "fetch_api",
+    "git_tools",
     "all_tools",
 ]
