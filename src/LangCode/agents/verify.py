@@ -78,13 +78,17 @@ def after_verify_routing(state: dict) -> str:
 
 
 def _extract_modified_python_files(state: dict) -> list[str]:
-    """从最近的工具调用中提取被修改的 Python 文件路径。"""
+    """从最近一轮 AI 工具调用中提取被修改的 Python 文件路径。
+
+    只检查最近一条 AIMessage，避免对同一文件重复验证。
+    """
     from langchain_core.messages import AIMessage
 
     files: set[str] = set()
     messages = state.get("messages", [])
 
-    for msg in reversed(messages[-20:]):
+    # 只检查最近一条含 tool_calls 的 AIMessage
+    for msg in reversed(messages):
         if isinstance(msg, AIMessage) and msg.tool_calls:
             for tc in msg.tool_calls:
                 name = tc.get("name", "")
@@ -94,6 +98,7 @@ def _extract_modified_python_files(state: dict) -> list[str]:
                     path = args.get("file_path", "")
                     if path and path.endswith(".py") and os.path.isfile(path):
                         files.add(os.path.abspath(path))
+            break  # 只检查最近一条
 
     return list(files)
 
@@ -119,9 +124,13 @@ def _syntax_check(files: list[str]) -> list[str]:
 
 
 def _import_check(files: list[str]) -> list[str]:
-    """动态 import 检查。"""
+    """动态 import 检查。仅对 Python 包内的文件执行（有 __init__.py 的目录）。"""
     errors: list[str] = []
     for fpath in files:
+        # 跳过不在 Python 包中的独立脚本
+        parent = os.path.dirname(fpath)
+        if not os.path.isfile(os.path.join(parent, "__init__.py")):
+            continue
         mod_path = fpath.replace("/", ".").replace("\\", ".").replace(".py", "")
         try:
             result = subprocess.run(

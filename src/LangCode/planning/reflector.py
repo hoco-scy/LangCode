@@ -6,9 +6,10 @@
 3. 反思结果中增加步骤摘要，便于后续步骤理解前序进展
 """
 
-from typing import Literal, Optional
+from typing import Literal
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, BaseMessage
+from langchain_core.tools import tool as lc_tool
 from pydantic import BaseModel, Field
 
 from LangCode.shared.types import LCState
@@ -29,12 +30,13 @@ REFLECT_PROMPT = """你是一个任务执行的反思评估者。
 - 执行结果是否正确？
 - 是否需要调整后续步骤？
 
-根据评估结果选择行动：
-1. continue — 当前步骤成功，继续下一步
-2. retry — 当前步骤失败但可以重试（说明改进方案）
-3. skip — 当前步骤无法完成但可以跳过（说明原因）
-4. replan — 需要调整整体计划（给出调整建议）
-"""
+你必须调用 reflect_decision 工具来报告评估结果。
+- action="continue"：步骤成功完成，继续下一步
+- action="retry"：步骤失败，需要重试
+- action="skip"：步骤无法完成，跳过
+- action="replan"：需要调整后续计划
+
+不要输出文本，直接调用工具。"""
 
 
 class ReflectDecision(BaseModel):
@@ -53,6 +55,19 @@ class ReflectDecision(BaseModel):
     )
 
 
+@lc_tool
+def reflect_decision(action: str, reason: str, step_summary: str = "", adjustment: str = "") -> dict:
+    """评估步骤执行结果并决定下一步行动。
+
+    Args:
+        action: 下一步行动，必须是 continue/retry/skip/replan 之一
+        reason: 决策理由
+        step_summary: 当前步骤的执行结果摘要
+        adjustment: 仅当 action=replan 时，给出调整建议
+    """
+    return {"action": action, "reason": reason, "step_summary": step_summary, "adjustment": adjustment}
+
+
 def reflect_node(state: LCState, llm: ChatOpenAI) -> dict:
     """反思节点：评估执行结果，更新计划状态"""
     plan_data = state.get("current_plan")
@@ -66,32 +81,46 @@ def reflect_node(state: LCState, llm: ChatOpenAI) -> dict:
 
     log.info("反思步骤 %d: %s", current.step_id, current.description)
 
-    # 构建反思上下文：计划 + 最近对话消息
     prompt = REFLECT_PROMPT.format(plan_display=plan.to_display())
     messages: list[BaseMessage] = [SystemMessage(content=prompt)]
 
-    # 注入最近 5 条消息作为执行上下文（包含工具调用结果）
+    # 注入最近 5 条消息作为执行上下文
     recent = state.get("messages", [])[-5:]
     messages.extend(recent)
 
     try:
-        structured_llm = llm.with_structured_output(ReflectDecision)
-        result = structured_llm.invoke(messages)
+        bound_llm = llm.bind_tools([reflect_decision])
+        response = bound_llm.invoke(messages)
 
-        if not isinstance(result, ReflectDecision):
-            log.warning("反思: 非预期返回类型，默认标记完成")
-            plan.mark_current_done("反思返回类型异常，默认继续")
+        tc = None
+        for t in (response.tool_calls or []):
+            if t["name"] == "reflect_decision":
+                tc = t
+                break
+
+        if not tc:
+            log.warning("反思: 模型未调用 reflect_decision，默认标记完成")
+            plan.mark_current_done("反思未返回决策，默认继续")
+            # 标记下一个步骤为 in_progress
+            next_step = plan.current()
+            if next_step and next_step.status == "pending":
+                next_step.status = "in_progress"
             return {"current_plan": plan.model_dump()}
 
-        action = result.action
-        reason = result.reason
-        step_summary = result.step_summary or reason
-        adjustment = result.adjustment
+        args = tc["args"]
+        action = args.get("action", "continue")
+        reason = args.get("reason", "")
+        step_summary = args.get("step_summary", "") or reason
+        adjustment = args.get("adjustment", "")
 
         log.info("反思结果: action=%s reason=%s", action, reason)
 
         if action == "continue":
             plan.mark_current_done(step_summary)
+            # 标记下一个步骤为 in_progress，确保 after_tools_routing 正确路由到 reflect
+            next_step = plan.current()
+            if next_step and next_step.status == "pending":
+                next_step.status = "in_progress"
         elif action == "retry":
             plan.mark_current_failed(f"重试: {reason}")
             current.status = "in_progress"
@@ -100,6 +129,10 @@ def reflect_node(state: LCState, llm: ChatOpenAI) -> dict:
             plan.current_step += 1
             if plan.current_step >= len(plan.steps):
                 plan.status = "completed"
+            else:
+                next_step = plan.current()
+                if next_step and next_step.status == "pending":
+                    next_step.status = "in_progress"
         elif action == "replan":
             plan.reflection = f"需要调整: {adjustment}"
 
@@ -107,6 +140,9 @@ def reflect_node(state: LCState, llm: ChatOpenAI) -> dict:
     except Exception as e:
         log.error("反思失败: %s", e)
         plan.mark_current_done("反思失败，默认继续")
+        next_step = plan.current()
+        if next_step and next_step.status == "pending":
+            next_step.status = "in_progress"
         return {"current_plan": plan.model_dump()}
 
 

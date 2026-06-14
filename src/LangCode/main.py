@@ -165,7 +165,7 @@ def create_engine(workspace_dir: str = None) -> QueryEngine:
     platform_prompt = get_platform_prompt()
 
     # Agent 提示词
-    agent_prompt = """你是一个编程智能体，也是多 Agent 系统的协调者。
+    agent_prompt = """你叫LangCode，是一个专为编程特化的智能体，也是多 Agent 系统的协调者。
 
 ## 核心行为
 
