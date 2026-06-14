@@ -29,6 +29,10 @@ from LangCode.shared.schemas import (
     GitCommitInfo, GitBlameEntry,
 )
 from LangCode.shared.logger import get_logger
+from LangCode.shared.session import SessionStore
+from LangCode.shared.tools import all_tools
+from LangCode.shared.ast_tools import ast_tools
+from LangCode.shared.mcp_client import MCPManager, MCPServerConnection
 
 __all__ = [
     "LCState",
@@ -37,4 +41,8 @@ __all__ = [
     "GitStatusResponse", "GitDiffResponse", "GitLogResponse", "GitBlameResponse",
     "GitCommitInfo", "GitBlameEntry",
     "get_logger",
+    "SessionStore",
+    "all_tools",
+    "ast_tools",
+    "MCPManager", "MCPServerConnection",
 ]
