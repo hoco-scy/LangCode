@@ -33,8 +33,8 @@ def run_repl(engine: QueryEngine) -> None:
     Args:
         engine: 已初始化的 QueryEngine 实例
     """
-    print("\n🤖 LangCode Agent 已就绪（v2）")
-    print("   输入消息开始对话，/mode 查看权限模式，/exit 退出\n")
+    print("\n[LangCode] Agent ready (v2)")
+    print("  输入消息开始对话，/mode 查看权限模式，/exit 退出\n")
 
     while True:
         try:
