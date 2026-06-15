@@ -5,6 +5,7 @@ Fork 子Agent 执行 Skill。
 
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 from LangCode.agents.skills.loader import SkillDefinition
@@ -88,9 +89,11 @@ class SkillRunner:
 
         graph = builder.compile(checkpointer=self.checkpointer)
 
-        # 执行
+        # 执行（skill 是一次性执行，每次生成独立 thread_id）
+        thread_id = f"skill-{skill.name}-{uuid.uuid4().hex[:8]}"
         result = graph.invoke(
             {"messages": [HumanMessage(content=args or skill.name)]},
+            {"configurable": {"thread_id": thread_id}},
         )
 
         # 提取最后一条 AI 消息
