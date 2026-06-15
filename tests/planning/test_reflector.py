@@ -3,11 +3,11 @@
 import pytest
 from unittest.mock import MagicMock, patch
 
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
 
 from LangCode.planning.reflector import (
     ReflectDecision, reflect_decision, reflect_node, should_continue_plan,
-    REFLECT_PROMPT,
+    REFLECT_PROMPT, _extract_tool_summary, _extract_fallback_summary,
 )
 from LangCode.planning.schema import Plan, PlanStep
 
@@ -168,3 +168,65 @@ class TestShouldContinuePlan:
         plan_dict = _make_plan_dict(n_steps=3, current_step=0, step_status="pending")
         state = _make_state(plan_dict=plan_dict)
         assert should_continue_plan(state) == "execute"
+
+
+class TestExtractToolSummary:
+    def test_empty_messages(self):
+        assert _extract_tool_summary([]) == ""
+
+    def test_no_tool_calls(self):
+        msgs = [HumanMessage(content="hi"), AIMessage(content="hello")]
+        assert _extract_tool_summary(msgs) == ""
+
+    def test_extracts_tool_result(self):
+        msgs = [
+            HumanMessage(content="read file"),
+            AIMessage(content="", tool_calls=[{"name": "read_file", "args": {"file_path": "x.py"}, "id": "tc1"}]),
+            ToolMessage(content="file content here", name="read_file", tool_call_id="tc1"),
+        ]
+        summary = _extract_tool_summary(msgs)
+        assert "read_file" in summary
+        assert "file content here" in summary
+
+    def test_skips_plan_create(self):
+        msgs = [
+            AIMessage(content="", tool_calls=[{"name": "plan_create", "args": {"goal": "x"}, "id": "tc1"}]),
+            ToolMessage(content="plan created", name="plan_create", tool_call_id="tc1"),
+        ]
+        summary = _extract_tool_summary(msgs)
+        assert summary == ""
+
+    def test_multiple_tools(self):
+        msgs = [
+            AIMessage(content="", tool_calls=[
+                {"name": "read_file", "args": {"file_path": "a.py"}, "id": "tc1"},
+                {"name": "execute_shell", "args": {"command": "ls"}, "id": "tc2"},
+            ]),
+            ToolMessage(content="content a", name="read_file", tool_call_id="tc1"),
+            ToolMessage(content="output ls", name="execute_shell", tool_call_id="tc2"),
+        ]
+        summary = _extract_tool_summary(msgs)
+        assert "read_file" in summary
+        assert "execute_shell" in summary
+
+
+class TestExtractFallbackSummary:
+    def test_empty_messages(self):
+        assert _extract_fallback_summary([]) == "步骤执行完成"
+
+    def test_extracts_from_tool_messages(self):
+        msgs = [
+            AIMessage(content="", tool_calls=[{"name": "read_file", "args": {}, "id": "tc1"}]),
+            ToolMessage(content="some file content", name="read_file", tool_call_id="tc1"),
+        ]
+        summary = _extract_fallback_summary(msgs)
+        assert "read_file" in summary
+        assert "some file content" in summary
+
+    def test_extracts_from_ai_tool_calls(self):
+        msgs = [
+            HumanMessage(content="test"),
+            AIMessage(content="", tool_calls=[{"name": "execute_shell", "args": {"command": "ls"}, "id": "tc1"}]),
+        ]
+        summary = _extract_fallback_summary(msgs)
+        assert "execute_shell" in summary

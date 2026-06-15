@@ -16,3 +16,6 @@ build/
 # Runtime data
 .langcode/
 .claude/
+
+
+deep-dive-claude-code/

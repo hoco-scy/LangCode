@@ -4,11 +4,16 @@
 1. 注入最近对话消息作为执行上下文，让反思决策有据可依
 2. 使用 structured output 替代 JSON 文本解析，提高可靠性
 3. 反思结果中增加步骤摘要，便于后续步骤理解前序进展
+
+修复：
+- 上下文从 5 条扩大到 15 条，确保覆盖工具执行结果
+- 提取工具执行摘要注入反思 prompt
+- 改进 fallback：从工具结果中提取实际执行内容
 """
 
 from typing import Literal
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import SystemMessage, BaseMessage
+from langchain_core.messages import SystemMessage, BaseMessage, AIMessage, ToolMessage
 from langchain_core.tools import tool as lc_tool
 from pydantic import BaseModel, Field
 
@@ -23,6 +28,8 @@ REFLECT_PROMPT = """你是一个任务执行的反思评估者。
 当前计划：
 {plan_display}
 
+{tool_summary}
+
 请评估刚完成的步骤执行情况，决定下一步行动。
 
 评估要点：
@@ -36,7 +43,7 @@ REFLECT_PROMPT = """你是一个任务执行的反思评估者。
 - action="skip"：步骤无法完成，跳过
 - action="replan"：需要调整后续计划
 
-不要输出文本，直接调用工具。"""
+不要输出文本，直接调用 reflect_decision 工具。"""
 
 
 class ReflectDecision(BaseModel):
@@ -68,6 +75,44 @@ def reflect_decision(action: str, reason: str, step_summary: str = "", adjustmen
     return {"action": action, "reason": reason, "step_summary": step_summary, "adjustment": adjustment}
 
 
+def _extract_tool_summary(messages: list, lookback: int = 10) -> str:
+    """从最近的消息中提取工具执行摘要。
+
+    找到最近一轮 AI 的 tool_calls 及其对应的 ToolMessage 结果，
+    格式化为可读的摘要供反思器参考。
+    """
+    recent = messages[-lookback:]
+    tool_results = []
+
+    # 找最近的 AIMessage with tool_calls
+    for i, msg in enumerate(recent):
+        if isinstance(msg, AIMessage) and msg.tool_calls:
+            for tc in msg.tool_calls:
+                tool_name = tc.get("name", "unknown")
+                tool_args = tc.get("args", {})
+                # 找对应的 ToolMessage
+                tc_id = tc.get("id", "")
+                result_content = ""
+                for subsequent in recent[i+1:]:
+                    if isinstance(subsequent, ToolMessage) and subsequent.tool_call_id == tc_id:
+                        content = subsequent.content if isinstance(subsequent.content, str) else str(subsequent.content)
+                        result_content = content[:300]
+                        break
+
+                if tool_name == "plan_create":
+                    continue  # 跳过 plan_create 本身
+
+                arg_summary = ", ".join(f"{k}={str(v)[:50]}" for k, v in list(tool_args.items())[:3])
+                tool_results.append(
+                    f"- {tool_name}({arg_summary}): {result_content[:200]}"
+                )
+
+    if not tool_results:
+        return ""
+
+    return "最近的工具执行结果：\n" + "\n".join(tool_results[-8:])
+
+
 def reflect_node(state: LCState, llm: ChatOpenAI) -> dict:
     """反思节点：评估执行结果，更新计划状态"""
     plan_data = state.get("current_plan")
@@ -81,11 +126,17 @@ def reflect_node(state: LCState, llm: ChatOpenAI) -> dict:
 
     log.info("反思步骤 %d: %s", current.step_id, current.description)
 
-    prompt = REFLECT_PROMPT.format(plan_display=plan.to_display())
+    # 提取工具执行摘要
+    tool_summary = _extract_tool_summary(state.get("messages", []))
+
+    prompt = REFLECT_PROMPT.format(
+        plan_display=plan.to_display(),
+        tool_summary=tool_summary,
+    )
     messages: list[BaseMessage] = [SystemMessage(content=prompt)]
 
-    # 注入最近 5 条消息作为执行上下文
-    recent = state.get("messages", [])[-5:]
+    # 注入最近 15 条消息作为执行上下文（扩大窗口以覆盖工具结果）
+    recent = state.get("messages", [])[-15:]
     messages.extend(recent)
 
     try:
@@ -99,9 +150,10 @@ def reflect_node(state: LCState, llm: ChatOpenAI) -> dict:
                 break
 
         if not tc:
-            log.warning("反思: 模型未调用 reflect_decision，默认标记完成")
-            plan.mark_current_done("反思未返回决策，默认继续")
-            # 标记下一个步骤为 in_progress
+            # LLM 未调用工具 → 尝试从工具结果中提取摘要作为 fallback
+            fallback_summary = _extract_fallback_summary(state.get("messages", []))
+            log.warning("反思: 模型未调用 reflect_decision，使用 fallback")
+            plan.mark_current_done(fallback_summary)
             next_step = plan.current()
             if next_step and next_step.status == "pending":
                 next_step.status = "in_progress"
@@ -117,7 +169,6 @@ def reflect_node(state: LCState, llm: ChatOpenAI) -> dict:
 
         if action == "continue":
             plan.mark_current_done(step_summary)
-            # 标记下一个步骤为 in_progress，确保 after_tools_routing 正确路由到 reflect
             next_step = plan.current()
             if next_step and next_step.status == "pending":
                 next_step.status = "in_progress"
@@ -139,11 +190,37 @@ def reflect_node(state: LCState, llm: ChatOpenAI) -> dict:
         return {"current_plan": plan.model_dump()}
     except Exception as e:
         log.error("反思失败: %s", e)
-        plan.mark_current_done("反思失败，默认继续")
+        fallback_summary = _extract_fallback_summary(state.get("messages", []))
+        plan.mark_current_done(f"反思失败: {fallback_summary}")
         next_step = plan.current()
         if next_step and next_step.status == "pending":
             next_step.status = "in_progress"
         return {"current_plan": plan.model_dump()}
+
+
+def _extract_fallback_summary(messages: list) -> str:
+    """从最近的工具结果中提取执行摘要（反思器 fallback）。
+
+    当 LLM 不调用 reflect_decision 时，从工具执行结果中提取关键信息。
+    """
+    recent = messages[-10:]
+    summaries = []
+    for msg in recent:
+        if isinstance(msg, ToolMessage):
+            content = msg.content if isinstance(msg.content, str) else str(msg.content)
+            name = getattr(msg, "name", "tool")
+            # 提取关键信息（成功/失败/文件路径等）
+            preview = content[:150].replace("\n", " ")
+            summaries.append(f"{name}: {preview}")
+        elif isinstance(msg, AIMessage) and msg.tool_calls:
+            for tc in msg.tool_calls:
+                name = tc.get("name", "")
+                if name not in ("plan_create", "reflect_decision"):
+                    summaries.append(f"调用 {name}")
+
+    if summaries:
+        return "; ".join(summaries[-3:])
+    return "步骤执行完成"
 
 
 def should_continue_plan(state: LCState) -> Literal["execute", "replan", "end"]:
