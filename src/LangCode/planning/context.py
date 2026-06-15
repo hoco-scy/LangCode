@@ -1,91 +1,87 @@
-"""PlanContextInjector — 将计划上下文注入 LLM 消息。
+"""Plan context injection — 将计划上下文注入 LLM 消息。
 
 在 Supervisor._call_llm() 的消息组装阶段调用。
-注入策略根据 current_step 状态切换。
+注入位置：紧跟系统提示词之后、记忆上下文之前。
+
+注入内容：
+1. 当前计划的 TODO 列表（含状态图标）
+2. 执行规则（对齐确认、及时更新、异常处理等）
 """
 
 from __future__ import annotations
 
 from typing import Optional
 
-from langchain_core.messages import SystemMessage
-
 from LangCode.planning.schema import Plan
 from LangCode.shared.logger import get_logger
 
 log = get_logger("planning.context")
 
+STATUS_ICONS = {
+    "pending": "[ ]",
+    "in_progress": "[>]",
+    "done": "[x]",
+    "failed": "[!]",
+    "skipped": "[-]",
+}
 
-def inject_plan_context(plan_data: Optional[dict]) -> list[SystemMessage]:
-    """构建计划上下文注入消息。
+
+def build_plan_context(plan_data: Optional[dict]) -> Optional[str]:
+    """构建计划上下文文本。
 
     Args:
         plan_data: LCState.current_plan (dict 形式的 Plan)
 
     Returns:
-        要注入的 SystemMessage 列表，供 _call_llm 插入到消息中
+        注入文本（str），无计划或计划已结束时返回 None
     """
     if not plan_data:
-        return []
+        return None
 
     try:
         plan = Plan(**plan_data)
     except Exception:
-        return []
+        return None
 
-    if plan.status == "completed":
-        return [SystemMessage(
-            id="plan_complete",
-            content=f"计划已完成: {plan.goal}\n\n你现在可以自由响应用户的后续请求。"
-        )]
-    if plan.status == "abandoned":
-        return []
+    if plan.status in ("completed", "abandoned"):
+        return None
 
+    # ── TODO 列表 ──
+    lines = [
+        f"═══ 执行计划 ═══",
+        f"",
+        f"目标：{plan.goal}",
+        f"",
+    ]
+
+    # 进度统计
+    done_count = sum(1 for s in plan.steps if s.status == "done")
+    lines.append(f"进度：{done_count}/{len(plan.steps)}")
+
+    for step in plan.steps:
+        icon = STATUS_ICONS.get(step.status, "[?]")
+        marker = " ← 当前" if step.step_id - 1 == plan.current_step else ""
+        lines.append(f"  {icon} {step.step_id}. {step.description}{marker}")
+        if step.result:
+            lines.append(f"     → {step.result[:120]}")
+        if step.error:
+            lines.append(f"     ✗ {step.error[:120]}")
+
+    # ── 执行规则 ──
     current = plan.current()
-    if not current:
-        return []
+    current_desc = current.description if current else "无"
 
-    messages: list[SystemMessage] = []
+    lines.extend([
+        f"",
+        f"═══ 执行规则 ═══",
+        f"",
+        f"1. 你当前正在执行计划，请确保你的每一个操作都服务于当前步骤目标",
+        f"2. 当前聚焦步骤「{current_desc}」，不要提前做后续步骤的工作",
+        f"3. 每完成一个步骤，立即调用 update_todo 标记为 done 并附上简要结果",
+        f"4. 如果某步骤失败，调用 update_todo 标记为 failed 并说明原因",
+        f"5. 如果发现计划需要调整（增删步骤），调用 modify_todo 修改",
+        f"6. 所有步骤完成后，调用 update_todo(step_index=0, status=completed) 标记计划完成",
+        f"7. 如果当前步骤遇到阻碍无法继续，向用户说明情况而非停滞",
+    ])
 
-    # 已完成步骤摘要
-    completed = [s for s in plan.steps if s.status == "done"]
-    if completed:
-        summary = "\n".join(
-            f"  步骤 {s.step_id}: {(s.result or '')[:150]}"
-            for s in completed if s.result
-        )
-        messages.append(SystemMessage(
-            id="plan_completed_summary",
-            content=f"已完成步骤:\n{summary}"
-        ))
-
-    # 当前步骤指令
-    if current.status == "in_progress":
-        messages.append(SystemMessage(
-            id="plan_execution",
-            content=(
-                f"正在执行计划: {plan.goal}\n\n"
-                f"当前步骤 ({current.step_id}/{len(plan.steps)}): {current.description}\n\n"
-                f"严格完成当前步骤，不要偏离。完成后简要总结结果。\n"
-                f"不要重复已完成的步骤。"
-            )
-        ))
-    elif current.status == "pending":
-        messages.append(SystemMessage(
-            id="plan_next_step",
-            content=(
-                f"计划下一步: {plan.goal}\n\n"
-                f"即将执行步骤 {current.step_id}: {current.description}\n\n"
-                f"{plan.to_display()}"
-            )
-        ))
-    elif current.status == "failed":
-        messages.append(SystemMessage(
-            id="plan_failed_step",
-            content=(
-                f"步骤 {current.step_id} 执行失败: {current.error}\n\n"
-                f"请分析失败原因并决定: 重试/跳过/调整计划。"
-            )
-        ))
-
-    return messages
+    return "\n".join(lines)

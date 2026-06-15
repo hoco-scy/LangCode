@@ -81,5 +81,6 @@ class TestDefaultBehavior:
     def test_plan_allowed_tools_set(self):
         """plan 模式允许的工具应该全部在 PLAN_MODE_ALLOWED_TOOLS 中"""
         for tool_name in ["read_file", "search_files", "fetch_api",
-                          "memory_search", "memory_list", "plan_create"]:
+                          "memory_search", "memory_list",
+                          "write_todo", "update_todo", "modify_todo"]:
             assert tool_name in PLAN_MODE_ALLOWED_TOOLS

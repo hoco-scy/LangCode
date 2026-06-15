@@ -34,9 +34,9 @@ class LCState(TypedDict):
     # 消费者: router.after_tools_routing
     route: Annotated[str, _last_wins]
 
-    # ── 计划上下文（生命周期: plan_create → plan_complete/abandon）──
-    # 设置者: router.process_tool_results
-    # 消费者: supervisor._call_llm (注入) + reflector (评估) + _after_reflect (路由)
+    # ── 计划上下文（生命周期: write_todo → update_todo(completed/abandoned)）──
+    # 设置者: router.process_tool_results（write_todo/update_todo/modify_todo）
+    # 消费者: supervisor._call_llm (注入 build_plan_context)
     current_plan: Optional[dict]
 
     # ── 子Agent 通信 ──
@@ -58,3 +58,13 @@ class LCState(TypedDict):
     # 设置者: after_tools_routing（回环时 +1）
     # 消费者: router（防止死循环，> MAX_ITERATIONS → END）
     supervisor_iterations: Annotated[int, _last_wins]
+
+    # ── 路由防重复 ──
+    # 设置者: router.process_tool_results（记录已处理的 tool_call id）
+    # 消费者: router.process_tool_results（跳过已处理的 todo/delegate_*）
+    _processed_tool_ids: str
+
+    # ── 委派队列 ──
+    # 设置者: router.process_tool_results（delegate_* 工具调用时入队）
+    # 消费者: graph_builder._dequeue_delegation（出队设置 route + task_description）
+    _pending_delegations: list[dict]

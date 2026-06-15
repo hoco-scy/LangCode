@@ -1,4 +1,4 @@
-"""agents.router — 路由决策测试"""
+"""agents.router — 路由决策测试（v3: todo 工具）"""
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -7,8 +7,6 @@ from LangCode.agents.router import (
     should_use_tools,
     process_tool_results,
     after_tools_routing,
-    _is_newly_created,
-    _is_step_in_progress,
     _find_last_ai_with_tool_calls,
 )
 from LangCode.planning.schema import Plan, PlanStep
@@ -21,20 +19,33 @@ class TestShouldUseTools:
         ]}
         assert should_use_tools(state) == "tools"
 
-    def test_without_tool_calls(self):
+    def test_without_tool_calls_no_plan(self):
         state = {"messages": [AIMessage(content="done")]}
+        assert should_use_tools(state) == "__end__"
+
+    def test_without_tool_calls_active_plan_ends(self):
+        """v3: 有活跃计划但无 tool_calls → __end__（不再走 reflector）"""
+        plan = Plan(goal="test", steps=[
+            PlanStep(step_id=1, description="s1", status="in_progress"),
+        ])
+        state = {"messages": [AIMessage(content="done")], "current_plan": plan.model_dump()}
         assert should_use_tools(state) == "__end__"
 
     def test_empty_messages(self):
         assert should_use_tools({"messages": []}) == "__end__"
 
+    def test_pending_delegations_routes_to_router(self):
+        """无 tool_calls 但有待处理委派 → router"""
+        state = {"messages": [AIMessage(content="done")], "_pending_delegations": [{"route": "explore", "task": "t"}]}
+        assert should_use_tools(state) == "router"
+
 
 class TestProcessToolResults:
-    def test_plan_create(self):
+    def test_write_todo(self):
         state = {"messages": [
             AIMessage(content="", tool_calls=[{
-                "name": "plan_create",
-                "args": {"goal": "重构代码", "steps": ["步骤1", "步骤2"]},
+                "name": "write_todo",
+                "args": {"goal": "重构代码", "steps": ["步骤1", "步骤2", "步骤3"]},
                 "id": "tc1",
             }])
         ]}
@@ -42,7 +53,68 @@ class TestProcessToolResults:
         assert "current_plan" in updates
         plan = Plan(**updates["current_plan"])
         assert plan.goal == "重构代码"
-        assert len(plan.steps) == 2
+        assert len(plan.steps) == 3
+        # 第一步自动标记为 in_progress
+        assert plan.steps[0].status == "in_progress"
+
+    def test_update_todo_done(self):
+        plan = Plan(goal="test", steps=[
+            PlanStep(step_id=1, description="s1", status="in_progress"),
+            PlanStep(step_id=2, description="s2"),
+        ])
+        state = {
+            "messages": [
+                AIMessage(content="", tool_calls=[{
+                    "name": "update_todo",
+                    "args": {"step_index": 1, "status": "done", "result": "完成"},
+                    "id": "tc1",
+                }])
+            ],
+            "current_plan": plan.model_dump(),
+        }
+        updates = process_tool_results(state)
+        updated_plan = Plan(**updates["current_plan"])
+        assert updated_plan.steps[0].status == "done"
+        assert updated_plan.steps[0].result == "完成"
+        # 自动推进到下一步
+        assert updated_plan.steps[1].status == "in_progress"
+
+    def test_update_todo_completed(self):
+        plan = Plan(goal="test", steps=[
+            PlanStep(step_id=1, description="s1", status="done", result="ok"),
+        ], current_step=1)
+        state = {
+            "messages": [
+                AIMessage(content="", tool_calls=[{
+                    "name": "update_todo",
+                    "args": {"step_index": 0, "status": "completed"},
+                    "id": "tc1",
+                }])
+            ],
+            "current_plan": plan.model_dump(),
+        }
+        updates = process_tool_results(state)
+        updated_plan = Plan(**updates["current_plan"])
+        assert updated_plan.status == "completed"
+
+    def test_modify_todo_add_steps(self):
+        plan = Plan(goal="test", steps=[
+            PlanStep(step_id=1, description="s1", status="in_progress"),
+        ])
+        state = {
+            "messages": [
+                AIMessage(content="", tool_calls=[{
+                    "name": "modify_todo",
+                    "args": {"add_steps": ["新步骤"]},
+                    "id": "tc1",
+                }])
+            ],
+            "current_plan": plan.model_dump(),
+        }
+        updates = process_tool_results(state)
+        updated_plan = Plan(**updates["current_plan"])
+        assert len(updated_plan.steps) == 2
+        assert updated_plan.steps[1].description == "新步骤"
 
     def test_delegate_explore(self):
         state = {"messages": [
@@ -53,19 +125,7 @@ class TestProcessToolResults:
             }])
         ]}
         updates = process_tool_results(state)
-        assert updates["route"] == "explore"
-        assert updates["task_description"] == "搜索代码模式"
-
-    def test_delegate_review(self):
-        state = {"messages": [
-            AIMessage(content="", tool_calls=[{
-                "name": "delegate_review",
-                "args": {"task": "审查代码"},
-                "id": "tc1",
-            }])
-        ]}
-        updates = process_tool_results(state)
-        assert updates["route"] == "review"
+        assert updates["_pending_delegations"] == [{"route": "explore", "task": "搜索代码模式"}]
 
     def test_no_signal(self):
         state = {"messages": [
@@ -83,68 +143,18 @@ class TestProcessToolResults:
 
 
 class TestAfterToolsRouting:
-    def test_newly_created_plan(self):
-        plan = Plan(goal="test", steps=[
-            PlanStep(step_id=1, description="step1"),
-            PlanStep(step_id=2, description="step2"),
-        ])
-        state = {"current_plan": plan.model_dump(), "route": ""}
-        assert after_tools_routing(state) == "plan_created"
-
     def test_delegate_explore(self):
-        state = {"current_plan": None, "route": "explore"}
+        state = {"_pending_delegations": [{"route": "explore", "task": "t"}]}
         assert after_tools_routing(state) == "delegated"
-
-    def test_delegate_review(self):
-        state = {"current_plan": None, "route": "review"}
-        assert after_tools_routing(state) == "delegated"
-
-    def test_reflect_when_step_in_progress(self):
-        plan = Plan(goal="test", steps=[
-            PlanStep(step_id=1, description="step1", status="in_progress"),
-            PlanStep(step_id=2, description="step2"),
-        ])
-        state = {"current_plan": plan.model_dump(), "route": ""}
-        assert after_tools_routing(state) == "reflect"
 
     def test_react_default(self):
-        state = {"current_plan": None, "route": ""}
+        state = {}
         assert after_tools_routing(state) == "react"
 
-
-class TestIsNewlyCreated:
-    def test_newly_created(self):
-        plan = Plan(goal="test", steps=[
-            PlanStep(step_id=1, description="s1"),
-            PlanStep(step_id=2, description="s2"),
-        ])
-        assert _is_newly_created(plan.model_dump()) is True
-
-    def test_with_in_progress_step(self):
-        plan = Plan(goal="test", steps=[
-            PlanStep(step_id=1, description="s1", status="in_progress"),
-            PlanStep(step_id=2, description="s2"),
-        ])
-        assert _is_newly_created(plan.model_dump()) is False
-
-    def test_single_step(self):
-        plan = Plan(goal="test", steps=[PlanStep(step_id=1, description="s1")])
-        assert _is_newly_created(plan.model_dump()) is False
-
-
-class TestIsStepInProgress:
-    def test_in_progress(self):
+    def test_plan_does_not_affect_routing(self):
+        """v3: 有活跃计划时，路由行为不受影响"""
         plan = Plan(goal="test", steps=[
             PlanStep(step_id=1, description="s1", status="in_progress"),
         ])
-        assert _is_step_in_progress(plan.model_dump()) is True
-
-    def test_all_pending(self):
-        plan = Plan(goal="test", steps=[
-            PlanStep(step_id=1, description="s1"),
-            PlanStep(step_id=2, description="s2"),
-        ])
-        assert _is_step_in_progress(plan.model_dump()) is False
-
-    def test_no_plan(self):
-        assert _is_step_in_progress(None) is False
+        state = {"current_plan": plan.model_dump()}
+        assert after_tools_routing(state) == "react"

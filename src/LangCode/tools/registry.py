@@ -30,7 +30,7 @@ class ToolRegistry:
     - AST 工具: tools/ast/（ast_info, ast_rename 等）
     - MCP 工具: tools/mcp/（运行时动态注册）
     - 记忆工具: memory/tools.py（memory_save/search/list）
-    - 规划工具: planning/planner.py（plan_create）
+    - Todo 工具: planning/todo_tools.py（write_todo / update_todo / modify_todo）
     """
 
     def __init__(self):
@@ -136,7 +136,8 @@ class _LangChainToolAdapter(Tool):
         return self.name in (
             "read_file", "search_files", "grep_content", "fetch_api",
             "memory_search", "memory_list",
-            "plan_create", "delegate_explore", "delegate_review",
+            "write_todo", "update_todo", "modify_todo",
+            "delegate_explore", "delegate_review",
             "git_status", "git_diff", "git_log", "git_blame",
         )
 
@@ -171,10 +172,11 @@ def register_ast_tools(registry: ToolRegistry) -> None:
 
 
 def register_plan_tools(registry: ToolRegistry) -> None:
-    """注册 plan_create 工具。"""
-    from LangCode.planning.planner import create_plan_tool
-    registry.register(create_plan_tool())
-    log.info("已注册 plan_create 工具")
+    """注册 write_todo / update_todo / modify_todo 工具。"""
+    from LangCode.planning.todo_tools import create_todo_tools
+    tools = create_todo_tools()
+    registry.register_many(tools)
+    log.info("已注册 %d 个 todo 工具", len(tools))
 
 
 def register_mcp_tools(registry: ToolRegistry) -> None:

@@ -48,6 +48,17 @@ class Plan(BaseModel):
             step.status = "failed"
             step.error = error
 
+    def mark_completed(self):
+        """标记整个计划完成"""
+        self.status = "completed"
+        for s in self.steps:
+            if s.status == "pending":
+                s.status = "skipped"
+
+    def mark_abandoned(self):
+        """标记计划放弃"""
+        self.status = "abandoned"
+
     def to_display(self) -> str:
         """生成可读的计划展示"""
         lines = [f"[目标] {self.goal}", f"状态: {self.status}", ""]

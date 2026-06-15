@@ -8,7 +8,8 @@ v2 架构：
 - AppState Store 响应式状态管理
 - 1 主 Agent + 2 子图（Explore, Review）
 - auto_verify 代码修改自动验证
-- plan_create/delegate_* tool calling 驱动路由
+- write_todo/update_todo/modify_todo 工具化计划管理
+- delegate_* tool calling 驱动子图路由
 
 用法：
     python main.py           # 命令行对话模式（默认）
@@ -143,8 +144,8 @@ def create_engine(workspace_dir: str = None) -> QueryEngine:
 
     # ── 9. 子图 ──
     all_lc_tools = registry.to_langchain_tools(mode="default")
-    explore_graph = build_explore_subgraph(llm, all_lc_tools, checkpointer=checkpointer)
-    review_graph = build_review_subgraph(llm, all_lc_tools, checkpointer=checkpointer)
+    explore_graph = build_explore_subgraph(llm, all_lc_tools, checkpointer=checkpointer, llm_client=llm_client)
+    review_graph = build_review_subgraph(llm, all_lc_tools, checkpointer=checkpointer, llm_client=llm_client)
 
     # ── 10. Supervisor 主图 ──
     supervisor_graph = build_supervisor_graph(
@@ -155,6 +156,7 @@ def create_engine(workspace_dir: str = None) -> QueryEngine:
             "explore": explore_graph,
             "review": review_graph,
         },
+        llm_client=llm_client,
     )
 
     # ── 11. 会话管理 ──
@@ -174,7 +176,7 @@ def create_engine(workspace_dir: str = None) -> QueryEngine:
 ## 核心行为
 
 - **简单任务**（只需一步操作，如读文件、回答问题）→ 直接调用对应工具
-- **复杂任务**（需要3步及以上操作）→ 调用 plan_create 工具创建执行计划
+- **复杂任务**（需要3步及以上操作）→ 调用 write_todo 工具创建执行计划
 - **专项任务**（代码研究、代码审查）→ 调用对应的 delegate 工具委派给专业 Agent
 
 ## 工具使用优先级
@@ -183,12 +185,11 @@ def create_engine(workspace_dir: str = None) -> QueryEngine:
 2. 精确替换 → edit_file
 3. 新建/覆盖 → write_file
 
-## 计划执行规则
+## 计划管理
 
-当系统注入了计划执行上下文时：
-- 严格按当前步骤操作，不要偏离
-- 完成当前步骤后用简洁文字总结结果
-- 不要重复已完成的步骤
+- 创建计划后，系统会在每轮对话中注入当前计划和执行规则
+- 严格按照计划执行，每完成一步及时调用 update_todo 标记完成
+- 需要调整计划时调用 modify_todo
 
 ## 行为准则
 

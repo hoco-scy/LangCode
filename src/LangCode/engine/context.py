@@ -8,8 +8,8 @@
   2. platform_xxx.md     — 操作系统/Shell 类型特定信息
   3. CLAUDE.md           — 项目说明（workspace 根目录下）
   4. custom_prompt       — 用户自定义追加
-  5. (memory_context)    — 由 Supervisor._call_llm 注入
-  6. (plan_context)      — 由 planning.context.inject_plan_context 注入
+  5. (plan_context)      — 由 planning.context.build_plan_context 注入（紧跟系统提示词之后）
+  6. (memory_context)    — 由 Supervisor._call_llm 注入（在计划上下文之后）
 """
 
 from __future__ import annotations

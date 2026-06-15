@@ -73,7 +73,9 @@ PLAN_MODE_ALLOWED_TOOLS: frozenset[str] = frozenset({
     "fetch_api",
     "memory_search",
     "memory_list",
-    "plan_create",
+    "write_todo",
+    "update_todo",
+    "modify_todo",
     "delegate_explore",
     "delegate_review",
     "ast_info",
@@ -111,7 +113,8 @@ def default_behavior_for_mode(mode: str, tool_name: str) -> PermissionResult:
 
     # default 模式
     if tool_name in ("read_file", "search_files", "fetch_api",
-                      "memory_search", "memory_list", "plan_create",
+                      "memory_search", "memory_list",
+                      "write_todo", "update_todo", "modify_todo",
                       "ast_info", "ast_find"):
         return PermissionResult.allow("default 模式: 只读工具允许")
     return PermissionResult.ask(f"default 模式: {tool_name} 需确认")

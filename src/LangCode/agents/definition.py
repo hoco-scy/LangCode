@@ -77,7 +77,8 @@ EXPLORE_AGENT = AgentDefinition(
     ],
     disallowed_tools=[
         "write_file", "edit_file", "run_python",
-        "delegate_explore", "delegate_review", "plan_create",
+        "delegate_explore", "delegate_review",
+        "write_todo", "update_todo", "modify_todo",
         "ast_rename", "ast_add_param", "ast_add_method", "ast_add_import",
     ],
     model="inherit",
@@ -99,7 +100,8 @@ REVIEW_AGENT = AgentDefinition(
     ],
     disallowed_tools=[
         "write_file", "edit_file",
-        "delegate_explore", "delegate_review", "plan_create",
+        "delegate_explore", "delegate_review",
+        "write_todo", "update_todo", "modify_todo",
         "ast_rename", "ast_add_param", "ast_add_method", "ast_add_import",
     ],
     model="inherit",
