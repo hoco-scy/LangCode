@@ -150,21 +150,24 @@ def _cmd_memory(engine: "QueryEngine") -> bool:
 
 def _cmd_skills(engine: "QueryEngine") -> bool:
     """显示可用技能。"""
-    from pathlib import Path
+    from LangCode.agents.skills.loader import SkillLoader
 
-    skills_dir = Path(engine.cfg.workspace_dir) / ".langcode" / "skills"
-    if not skills_dir.exists():
-        print("未找到自定义技能目录 (.langcode/skills/)")
-        print("内置技能: code-review, refactor, write-tests")
-        return True
+    loader = SkillLoader(engine.cfg.workspace_dir)
+    skills = loader.load_all()
 
-    skill_files = list(skills_dir.glob("*.md"))
-    if not skill_files:
-        print("技能目录为空。")
-    else:
-        print(f"可用技能 ({len(skill_files)}):")
-        for f in skill_files:
-            print(f"  /{f.stem}")
+    builtin = [s for s in skills if "resources" in s.source_file.replace("\\", "/")]
+    custom = [s for s in skills if s not in builtin]
+
+    if builtin:
+        print(f"内置技能 ({len(builtin)}):")
+        for s in builtin:
+            print(f"  /{s.name:<16s} {s.description}")
+    if custom:
+        print(f"自定义技能 ({len(custom)}):")
+        for s in custom:
+            print(f"  /{s.name:<16s} {s.description}")
+    if not skills:
+        print("暂无可用技能。")
     return True
 
 

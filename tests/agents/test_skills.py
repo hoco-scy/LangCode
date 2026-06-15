@@ -2,6 +2,7 @@
 
 import pytest
 from pathlib import Path
+from unittest.mock import patch
 
 from LangCode.agents.skills.loader import SkillLoader, SkillDefinition, _parse_frontmatter
 
@@ -42,6 +43,13 @@ class TestParseFrontmatter:
 
 
 class TestSkillLoader:
+    @pytest.fixture(autouse=True)
+    def _no_builtin(self, tmp_path):
+        """隔离内置 Skill 目录，确保测试只看到自己创建的文件。"""
+        empty = tmp_path / "_no_builtin"
+        with patch.object(SkillLoader, "_BUILTIN_DIR", empty):
+            yield
+
     def test_no_skills_dir(self, tmp_path):
         loader = SkillLoader(str(tmp_path))
         skills = loader.load_all()

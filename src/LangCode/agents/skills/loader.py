@@ -39,7 +39,7 @@ class SkillDefinition:
 
 
 class SkillLoader:
-    """从 .langcode/skills/*.md 加载 Skill。
+    """从 .langcode/skills/*.md 和包内 resources/prompts/skills/*.md 加载 Skill。
 
     用法：
         loader = SkillLoader("/path/to/workspace")
@@ -48,22 +48,43 @@ class SkillLoader:
             print(f"{skill.name}: {skill.description}")
     """
 
+    # 包内内置 Skill 目录
+    _BUILTIN_DIR = Path(__file__).parent.parent.parent / "resources" / "prompts" / "skills"
+
     def __init__(self, workspace_dir: str):
         self.skills_dir = Path(workspace_dir) / ".langcode" / "skills"
 
     def load_all(self) -> list[SkillDefinition]:
-        """加载所有 Skill 文件。"""
-        if not self.skills_dir.exists():
-            return []
-
+        """加载所有 Skill 文件（内置 + 工作区自定义）。"""
+        seen: set[str] = set()
         skills: list[SkillDefinition] = []
-        for md_file in sorted(self.skills_dir.glob("*.md")):
-            skill = self._load_one(md_file)
-            if skill:
-                skills.append(skill)
+
+        # 内置 Skill
+        for skill in self._load_dir(self._BUILTIN_DIR):
+            skills.append(skill)
+            seen.add(skill.name)
+
+        # 工作区自定义 Skill（同名覆盖内置）
+        for skill in self._load_dir(self.skills_dir):
+            if skill.name in seen:
+                # 替换同名内置
+                skills = [s for s in skills if s.name != skill.name]
+            skills.append(skill)
+            seen.add(skill.name)
 
         log.info("已加载 %d 个 Skill", len(skills))
         return skills
+
+    def _load_dir(self, directory: Path) -> list[SkillDefinition]:
+        """从指定目录加载 Skill 文件。"""
+        if not directory.exists():
+            return []
+        results: list[SkillDefinition] = []
+        for md_file in sorted(directory.glob("*.md")):
+            skill = self._load_one(md_file)
+            if skill:
+                results.append(skill)
+        return results
 
     def _load_one(self, path: Path) -> Optional[SkillDefinition]:
         """加载单个 Skill 文件。"""
