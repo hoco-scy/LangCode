@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import sys
 import os
-import asyncio
 from typing import TYPE_CHECKING
 
 # Windows 控制台默认 GBK 无法显示 emoji，强制 UTF-8
@@ -66,12 +65,18 @@ def run_repl(engine: QueryEngine) -> None:
             handled = handle_command(engine, user_input)
             if handled:
                 continue
-            # 尝试作为 Skill 调用
-            if engine.cfg.skill_runner:
-                skill = _find_skill(engine, user_input)
-                if skill:
-                    _consume_and_print(_run_skill(engine, skill, user_input))
-                    continue
+            # 尝试作为 Skill 调用 — 注入 system message 后走正常事件流
+            skill = _find_skill(engine, user_input)
+            if skill:
+                args = user_input.split(maxsplit=1)
+                args = args[1] if len(args) > 1 else skill.name
+                print(f"[执行技能] {skill.name}: {skill.description}")
+                from langchain_core.messages import SystemMessage
+                engine.graph.update_state(engine.config, {
+                    "messages": [SystemMessage(content=skill.prompt)],
+                })
+                user_input = args
+            else:
                 print(f"未知命令或技能: {user_input.split()[0]}，输入 /help 查看可用命令，/skills 查看可用技能")
                 continue
 
@@ -154,21 +159,3 @@ def _find_skill(engine: QueryEngine, user_input: str):
     skill_name = user_input.strip().split()[0].lstrip("/")
     loader = SkillLoader(engine.cfg.workspace_dir)
     return next((s for s in loader.load_all() if s.name == skill_name), None)
-
-
-def _run_skill(engine: QueryEngine, skill, user_input: str):
-    """执行 Skill，返回 EngineEvent 生成器。"""
-    from LangCode.engine.query_engine import EngineEvent
-
-    args = user_input.strip().split(maxsplit=1)
-    args = args[1] if len(args) > 1 else ""
-
-    print(f"[执行技能] {skill.name}: {skill.description}")
-    try:
-        result = asyncio.run(engine.cfg.skill_runner.run_skill(skill, args))
-    except Exception as e:
-        log.error("Skill 执行失败: %s", e)
-        result = f"[Skill 执行失败] {e}"
-
-    yield EngineEvent(type="text_chunk", data=result)
-    yield EngineEvent(type="done")

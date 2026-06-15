@@ -35,7 +35,6 @@ from LangCode.agents.definition import EXPLORE_AGENT, REVIEW_AGENT
 from LangCode.agents.graph_builder import (
     build_supervisor_graph, build_explore_subgraph, build_review_subgraph,
 )
-from LangCode.agents.skills.runner import SkillRunner
 from LangCode.agents.prompts import get_platform_prompt
 from LangCode.shared.logger import get_logger
 from LangCode.tools.registry import (
@@ -160,9 +159,6 @@ def create_engine(workspace_dir: str = None) -> QueryEngine:
         llm_client=llm_client,
     )
 
-    # ── 10b. SkillRunner ──
-    skill_runner = SkillRunner(llm=llm, tools=all_lc_tools)
-
     # ── 11. 会话管理 ──
     session_store = SessionStore()
     session_id = uuid.uuid4().hex[:12]
@@ -229,7 +225,6 @@ def create_engine(workspace_dir: str = None) -> QueryEngine:
         tool_context=tool_context,
         analytics=analytics,
         transcript=transcript,
-        skill_runner=skill_runner,
     ))
 
     return engine
