@@ -72,7 +72,7 @@ EXPLORE_AGENT = AgentDefinition(
         "例如：查找特定代码模式、理解项目结构、分析代码变更历史。"
     ),
     tools=[
-        "read_file", "search_files", "fetch_api",
+        "read_file", "search_files", "grep_content", "fetch_api",
         "execute_shell", "memory_search", "memory_list",
     ],
     disallowed_tools=[
@@ -94,7 +94,7 @@ REVIEW_AGENT = AgentDefinition(
         "例如：审查 PR、分析安全性、检查代码风格。"
     ),
     tools=[
-        "read_file", "search_files", "execute_shell", "run_python",
+        "read_file", "search_files", "grep_content", "execute_shell", "run_python",
         "memory_search", "memory_list",
     ],
     disallowed_tools=[

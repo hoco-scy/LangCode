@@ -12,7 +12,6 @@ def engine():
     mock = MagicMock()
     mock.get_current_state.return_value = {
         "messages": [],
-        "agent_mode": "default",
         "current_plan": None,
     }
     mock.cfg.memory_store = MagicMock()
@@ -22,17 +21,26 @@ def engine():
     return mock
 
 
+def _mock_app_state(agent_mode="default"):
+    """创建 mock AppState"""
+    mock_state = MagicMock()
+    mock_state.session.agent_mode = agent_mode
+    return mock_state
+
+
 class TestModeCommand:
-    def test_mode_status(self, engine, capsys):
+    @patch("LangCode.state.app_state.get_app_state", return_value=_mock_app_state("default"))
+    def test_mode_status(self, mock_get, engine, capsys):
         result = handle_command(engine, "/mode")
         assert result is True
         captured = capsys.readouterr()
         assert "default" in captured.out
 
-    def test_mode_set_plan(self, engine, capsys):
+    @patch("LangCode.state.app_state.update_app_state")
+    def test_mode_set_plan(self, mock_update, engine, capsys):
         result = handle_command(engine, "/mode plan")
         assert result is True
-        engine.update_state.assert_called_once_with({"agent_mode": "plan"})
+        mock_update.assert_called_once()
 
     def test_mode_set_invalid(self, engine, capsys):
         result = handle_command(engine, "/mode invalid")
@@ -40,23 +48,25 @@ class TestModeCommand:
         captured = capsys.readouterr()
         assert "无效" in captured.out
 
-    def test_mode_set_bypass(self, engine, capsys):
+    @patch("LangCode.state.app_state.update_app_state")
+    def test_mode_set_bypass(self, mock_update, engine, capsys):
         result = handle_command(engine, "/mode bypass")
         assert result is True
-        engine.update_state.assert_called_once_with({"agent_mode": "bypass"})
+        mock_update.assert_called_once()
 
 
 class TestSessionCommand:
-    def test_session_info(self, engine, capsys):
+    @patch("LangCode.state.app_state.get_app_state", return_value=_mock_app_state("default"))
+    def test_session_info(self, mock_get, engine, capsys):
         result = handle_command(engine, "/session")
         assert result is True
         captured = capsys.readouterr()
         assert "条消息" in captured.out
 
-    def test_session_with_plan(self, engine, capsys):
+    @patch("LangCode.state.app_state.get_app_state", return_value=_mock_app_state("default"))
+    def test_session_with_plan(self, mock_get, engine, capsys):
         engine.get_current_state.return_value = {
             "messages": [MagicMock()],
-            "agent_mode": "default",
             "current_plan": {"goal": "test", "steps": []},
         }
         result = handle_command(engine, "/session")

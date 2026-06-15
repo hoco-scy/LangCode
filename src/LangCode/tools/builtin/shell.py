@@ -1,4 +1,10 @@
-"""BashTool — 执行 shell 命令。"""
+"""BashTool — 执行 shell 命令。
+
+集成 BashClassifier 安全分析：
+- 执行前对命令进行语义分类（只读/破坏性/网络）
+- 分类结果记录到日志，供权限系统和遥测使用
+- 破坏性命令附加警告标记（不阻断，由权限系统决定是否确认）
+"""
 
 import subprocess
 import locale
@@ -7,8 +13,11 @@ from langchain.tools import tool
 from pydantic import BaseModel, Field
 
 from LangCode.shared.logger import get_logger
+from LangCode.permissions.classifier import BashClassifier
 
 log = get_logger("tools.shell")
+
+_classifier = BashClassifier()
 
 
 def _get_shell_encoding() -> str:
@@ -27,9 +36,27 @@ class RunCommandInput(BaseModel):
 
 @tool("execute_shell", args_schema=RunCommandInput)
 def execute_shell(command: str, timeout: int = 30):
-    """执行 shell 命令"""
+    """执行 shell 命令。自动进行安全分类分析。"""
     from LangCode.shared.models import CommandResponse
-    log.info("execute_shell: command=%s timeout=%ds", command, timeout)
+
+    # BashClassifier 安全分析
+    classification = _classifier.classify(command)
+    safety_tags = []
+    if classification.is_destructive:
+        safety_tags.append("destructive")
+        log.warning("execute_shell [破坏性]: command=%s", command[:200])
+    if classification.is_network:
+        safety_tags.append("network")
+        log.info("execute_shell [网络]: command=%s", command[:200])
+    if classification.has_substitution:
+        safety_tags.append("substitution")
+        log.info("execute_shell [命令替换]: command=%s", command[:200])
+    if classification.is_read_only:
+        log.debug("execute_shell [只读]: command=%s", command[:200])
+    else:
+        log.info("execute_shell: command=%s timeout=%ds tags=%s",
+                 command[:200], timeout, safety_tags)
+
     try:
         enc = _get_shell_encoding()
         result = subprocess.run(

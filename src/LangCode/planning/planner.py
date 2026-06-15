@@ -78,7 +78,6 @@ def create_plan_node(state: LCState, llm: ChatOpenAI) -> dict:
 
         return {
             "current_plan": plan.model_dump(),
-            "plan_step_index": 0,
             "task_description": task,
         }
     except Exception as e:
@@ -90,7 +89,6 @@ def create_plan_node(state: LCState, llm: ChatOpenAI) -> dict:
         )
         return {
             "current_plan": fallback.model_dump(),
-            "plan_step_index": 0,
             "task_description": task,
         }
 

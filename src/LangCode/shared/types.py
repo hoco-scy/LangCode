@@ -1,13 +1,9 @@
 """LCState — LangGraph 图流程状态定义。
 
-v2 变更说明（保持向后兼容）：
-  当前保留所有 v1 字段，Phase 4 重建 Agent 系统时再移除废弃字段。
-  标注 [DEPRECATED Phase 4] 的字段将在 Phase 4 迁移到 AppState 或移除。
-  标注 [v2 NEW] 的字段是 v2 新增的图流程字段。
-
-v2 最终目标（8 字段）：
-  messages, route, current_plan, task_description,
-  verify_errors, memory_context, supervisor_iterations
+v2 最终版（8 字段）：
+  仅包含图表流转所需的字段。
+  用户偏好、模式配置、统计 → AppState (Store)
+  每个字段有明确的"设置者"和"消费者"
 """
 
 from typing import Literal, Annotated, Optional, TypedDict
@@ -16,46 +12,49 @@ from langchain_core.messages import AnyMessage
 
 
 def _last_wins(_old, new):
-    """reducer: 多个节点同一步更新同一 key 时，取最后一个值"""
+    """Reducer: 多节点同时更新同一 key 时取最后值"""
     return new
 
 
 class LCState(TypedDict):
-    # === 对话核心 ===
+    """LangGraph 图流程状态 — 仅包含图表流转所需的字段
+
+    设计原则：
+    - 只放图流程相关字段（路由信号、跨节点通信、图执行上下文）
+    - 用户偏好、模式配置、统计 → AppState (Store)
+    - 每个字段有明确的"设置者"和"消费者"
+    """
+
+    # ── 对话核心 ──
+    # 设置者: agent + tools + 用户入口  消费者: 所有 LLM 调用
     messages: Annotated[list[AnyMessage], add_messages]
 
-    # === 用户信息 [DEPRECATED Phase 4 → AppState.user] ===
-    user_name: str
-    platform: Literal["windows", "linux", "mac"]
+    # ── 路由信号（瞬态：设置后立即消费，不跨轮次）──
+    # 设置者: router.process_tool_results
+    # 消费者: router.after_tools_routing
+    route: Annotated[str, _last_wins]
 
-    # === 工具 [DEPRECATED Phase 4 → engine/recovery] ===
-    tool_retry_count: Annotated[int, _last_wins]
+    # ── 计划上下文（生命周期: plan_create → plan_complete/abandon）──
+    # 设置者: router.process_tool_results
+    # 消费者: supervisor._call_llm (注入) + reflector (评估) + _after_reflect (路由)
+    current_plan: Optional[dict]
 
-    # === Agent 路由 [DEPRECATED Phase 4 → 运行时局部变量] ===
-    current_agent: Literal["supervisor", "code", "research", "review"]
+    # ── 子Agent 通信 ──
+    # 设置者: router.process_tool_results（delegate_* 工具调用时）
+    # 消费者: supervisor._delegate_router（构建子Agent 输入消息）
+    task_description: str
 
-    # === 模式 [DEPRECATED Phase 4 → AppState.session.agent_mode] ===
-    agent_mode: Literal["plan", "build"]
-    dangerous_edit_mode: bool
-    strict_mode: bool
+    # ── 验证闭环 ──
+    # 设置者: supervisor._auto_verify（工具执行后、router 之前）
+    # 消费者: supervisor._after_verify（路由回 agent 或继续）
+    verify_errors: Annotated[Optional[list[str]], _last_wins]
 
-    # === 计数 [DEPRECATED Phase 4 → AppState.analytics] ===
-    content_generation_count: int
-    tool_calls_count: int
-    code_generation_count: int
+    # ── 记忆上下文 ──
+    # 设置者: cli（每轮对话前从 MemoryManager 检索）
+    # 消费者: supervisor._call_llm（注入到 LLM 消息）
+    memory_context: str
 
-    # === 记忆 [v2 KEEP] ===
-    memory_context: str                    # 检索到的相关记忆，注入 LLM 上下文
-
-    # === 规划 [v2 KEEP current_plan; plan_step_index DEPRECATED] ===
-    current_plan: Optional[dict]           # 当前执行计划（JSON 序列化的 Plan）
-    plan_step_index: int                   # [DEPRECATED Phase 4] current_plan.current_step_index() 替代
-
-    # === 多Agent [v2 KEEP] ===
-    task_description: str                  # 当前任务描述
-    verify_errors: Optional[list[str]]     # 验证节点发现的错误列表
-
-    # === Supervisor 路由 [v2 KEEP route + supervisor_iterations] ===
-    route: Annotated[str, _last_wins]      # supervisor 中枢路由决策
-    plan_steps: list[str]                  # [DEPRECATED Phase 4] current_plan.steps 替代
-    supervisor_iterations: Annotated[int, _last_wins]  # 回环迭代计数
+    # ── 迭代控制 ──
+    # 设置者: after_tools_routing（回环时 +1）
+    # 消费者: router（防止死循环，> MAX_ITERATIONS → END）
+    supervisor_iterations: Annotated[int, _last_wins]

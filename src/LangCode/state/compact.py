@@ -34,8 +34,8 @@ MICRO_COMPACT_KEEP_RECENT = 5
 
 # 可压缩的工具列表（输出通常很长且后续不再需要）
 COMPACTABLE_TOOLS = frozenset({
-    "read_file", "execute_shell", "search_files",
-    "fetch_api", "run_python",
+    "read_file", "execute_shell", "search_files", "grep_content",
+    "fetch_api", "web_search", "run_python",
     "write_file", "edit_file",
     "ast_info", "ast_find",
 })

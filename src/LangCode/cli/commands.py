@@ -67,8 +67,8 @@ def handle_command(engine: "QueryEngine", user_input: str) -> bool:
 
 def _cmd_mode_status(engine: "QueryEngine") -> bool:
     """显示当前权限模式。"""
-    state = engine.get_current_state()
-    mode = state.get("agent_mode", "default")
+    from LangCode.state.app_state import get_app_state
+    mode = get_app_state().session.agent_mode
     print(f"当前权限模式: {mode}")
     mode_desc = {
         "plan": "只读模式 — 仅允许读取和搜索操作",
@@ -84,22 +84,26 @@ def _cmd_mode_status(engine: "QueryEngine") -> bool:
 
 def _cmd_mode_set(engine: "QueryEngine", mode: str) -> bool:
     """切换权限模式。"""
+    from LangCode.state.app_state import update_app_state
+    from dataclasses import replace
+
     valid_modes = ("plan", "accept_edits", "default", "dont_ask", "bypass")
     if mode not in valid_modes:
         print(f"无效模式: {mode}")
         print(f"可用模式: {', '.join(valid_modes)}")
         return True
-    engine.update_state({"agent_mode": mode})
+    update_app_state(lambda prev: replace(prev, session=replace(prev.session, agent_mode=mode)))
     print(f"已切换到 {mode} 模式。")
     return True
 
 
 def _cmd_session(engine: "QueryEngine") -> bool:
     """显示会话信息。"""
+    from LangCode.state.app_state import get_app_state
     state = engine.get_current_state()
     msg_count = len(state.get("messages", []))
     plan = state.get("current_plan")
-    mode = state.get("agent_mode", "default")
+    mode = get_app_state().session.agent_mode
     plan_info = ", 计划进行中" if plan else ""
     print(f"当前会话: {msg_count} 条消息{plan_info}, 模式: {mode}")
     return True

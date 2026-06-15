@@ -66,6 +66,7 @@ class QueryEngineConfig:
     path_sandbox: Any = None                # PathSandbox
     tool_context: Any = None                # ToolUseContext
     analytics: Any = None                   # AnalyticsTracker
+    transcript: Any = None                  # TranscriptWriter（JSONL 持久化）
 
 
 class QueryEngine:
@@ -130,13 +131,28 @@ class QueryEngine:
 
         # 发送用户消息
         log.info("用户输入: %s", prompt[:200])
+        user_msg = HumanMessage(content=prompt)
+
+        # Transcript 持久化（崩溃安全）
+        if self.cfg.transcript:
+            self.cfg.transcript.append(user_msg)
+
         events = self.graph.stream(
-            {"messages": [HumanMessage(content=prompt)]},
+            {"messages": [user_msg]},
             self.config,
             stream_mode=["messages", "updates"],
         )
 
         yield from self._consume_events(events)
+
+        # Transcript 持久化：将本轮 AI 响应写入 JSONL
+        if self.cfg.transcript:
+            current_state = self.graph.get_state(self.config)
+            all_msgs = current_state.values.get("messages", [])
+            for msg in all_msgs[-10:]:
+                msg_type = getattr(msg, "type", "")
+                if msg_type in ("ai", "system", "tool"):
+                    self.cfg.transcript.append(msg)
 
     def resume_after_interrupt(self, user_response: str) -> AsyncGenerator[EngineEvent, None]:
         """中断恢复"""

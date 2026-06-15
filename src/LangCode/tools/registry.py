@@ -128,14 +128,16 @@ class _LangChainToolAdapter(Tool):
         return None  # 旧工具：权限由权限系统统一处理
 
     def is_read_only(self, args):
-        return self.name in ("read_file", "search_files", "fetch_api",
-                             "memory_search", "memory_list", "plan_show")
+        return self.name in ("read_file", "search_files", "grep_content", "fetch_api",
+                             "memory_search", "memory_list", "plan_show",
+                             "git_status", "git_diff", "git_log", "git_blame")
 
     def is_plan_allowed(self):
         return self.name in (
-            "read_file", "search_files", "fetch_api",
+            "read_file", "search_files", "grep_content", "fetch_api",
             "memory_search", "memory_list",
             "plan_create", "delegate_explore", "delegate_review",
+            "git_status", "git_diff", "git_log", "git_blame",
         )
 
     def to_langchain_tool(self):

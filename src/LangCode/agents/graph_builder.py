@@ -120,7 +120,7 @@ def build_explore_subgraph(llm: ChatOpenAI, tools: list[BaseTool],
     中间搜索细节留在子图上下文，只有摘要进入父图 messages。
     """
     explore_tools = [t for t in tools if t.name in (
-        "read_file", "search_files", "fetch_api", "execute_shell",
+        "read_file", "search_files", "grep_content", "fetch_api", "execute_shell",
         "memory_search", "memory_list",
     )]
 
@@ -153,7 +153,7 @@ def build_review_subgraph(llm: ChatOpenAI, tools: list[BaseTool],
     防止 LLM 在报告阶段幻觉 tool_calls。
     """
     review_tools = [t for t in tools if t.name in (
-        "read_file", "search_files", "execute_shell", "run_python",
+        "read_file", "search_files", "grep_content", "execute_shell", "run_python",
         "memory_search", "memory_list",
     )]
 

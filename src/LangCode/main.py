@@ -42,6 +42,7 @@ from LangCode.tools.registry import (
 )
 from LangCode.tools.context import ToolUseContext
 from LangCode.state.session import SessionStore, SessionRecord
+from LangCode.state.transcript import TranscriptWriter, TranscriptReader
 from LangCode.memory.store import SQLiteMemoryStore
 from LangCode.memory.manager import MemoryManager
 from LangCode.permissions.rules import RuleEngine
@@ -161,6 +162,9 @@ def create_engine(workspace_dir: str = None) -> QueryEngine:
     session_id = uuid.uuid4().hex[:12]
     current_session = SessionRecord(id=session_id, workspace=workspace)
 
+    # ── 11b. Transcript JSONL 持久化 ──
+    transcript = TranscriptWriter(session_id=session_id)
+
     config_dict = {"configurable": {"thread_id": session_id}}
     platform_prompt = get_platform_prompt()
 
@@ -219,6 +223,7 @@ def create_engine(workspace_dir: str = None) -> QueryEngine:
         path_sandbox=path_sandbox,
         tool_context=tool_context,
         analytics=analytics,
+        transcript=transcript,
     ))
 
     return engine
