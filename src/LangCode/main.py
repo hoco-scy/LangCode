@@ -18,6 +18,7 @@ v2 架构：
 
 import os
 import sys
+import shutil
 import sqlite3
 import uuid
 import platform
@@ -51,15 +52,48 @@ from LangCode.permissions.sandbox import PathSandbox
 
 log = get_logger("main")
 
-_CHECKPOINT_DB = str(Path.home() / ".langcode" / "checkpoints.db")
+_LANGCODE_DIR = Path.home() / ".langcode"
+_CHECKPOINT_DB = str(_LANGCODE_DIR / "checkpoints.db")
+
+_AGENT_PROMPT = """你叫LangCode，是一个专为编程特化的智能体，也是多 Agent 系统的协调者。
+
+## 核心行为
+
+- **简单任务**（只需一步操作，如读文件、回答问题）→ 直接调用对应工具
+- **复杂任务**（需要3步及以上操作）→ 调用 write_todo 工具创建执行计划
+- **专项任务**（代码研究、代码审查）→ 调用对应的 delegate 工具委派给专业 Agent
+
+## 工具使用优先级
+
+1. 结构化代码修改 → ast_rename / ast_add_param
+2. 精确替换 → edit_file
+3. 新建/覆盖 → write_file
+
+## 计划管理
+
+- 创建计划后，系统会在每轮对话中注入当前计划和执行规则
+- 严格按照计划执行，每完成一步及时调用 update_todo 标记完成
+- 需要调整计划时调用 modify_todo
+
+## 行为准则
+
+- 每次工具调用应有明确目的，避免无意义的重复调用
+- 当用户表达偏好或做出重要决策时，使用 memory_save 记住
+- 回答简洁准确，必要时附上代码示例
+"""
 
 
 def _ensure_checkpoint_schema(conn):
-    """检测并修复 checkpoint 表 schema"""
+    """检测并修复 checkpoint 表 schema，迁移前自动备份。"""
     cols = {row[1] for row in conn.execute("PRAGMA table_info(checkpoints)").fetchall()}
     if "type" in cols:
         return
-    log.warning("检测到旧版 checkpoint schema，重建表")
+    # 备份旧数据库
+    db_path = Path(_CHECKPOINT_DB)
+    if db_path.exists():
+        backup = db_path.with_suffix(".db.bak")
+        shutil.copy2(db_path, backup)
+        log.warning("旧版 checkpoint schema，已备份到 %s", backup)
     conn.executescript("""
         DROP TABLE IF EXISTS checkpoints;
         DROP TABLE IF EXISTS writes;
@@ -70,23 +104,7 @@ def _ensure_checkpoint_schema(conn):
 
 
 def create_engine(workspace_dir: str = None) -> QueryEngine:
-    """组装所有子系统，创建 QueryEngine。
-
-    组装顺序（严格按依赖关系）：
-    1. Config（分层配置）
-    2. AppState（全局 Store）
-    3. Analytics（遥测）
-    4. LLMClient
-    5. Permission 系统（RuleEngine + PathSandbox）
-    6. 工具注册（ToolRegistry 统一管理）
-    7. 记忆系统
-    8. Checkpoint
-    9. 子图（Explore, Review）
-    10. Supervisor 主图
-    11. SessionStore + SessionRecord
-    12. ToolUseContext
-    13. QueryEngine
-    """
+    """组装所有子系统，创建 QueryEngine。"""
     workspace = workspace_dir or os.getcwd()
 
     # ── 1. 配置 ──
@@ -115,7 +133,7 @@ def create_engine(workspace_dir: str = None) -> QueryEngine:
     rule_engine.load_rules(workspace)
     path_sandbox = PathSandbox(workspace)
 
-    # ── 6. 工具注册（通过 ToolRegistry 统一管理） ──
+    # ── 6. 工具注册 ──
     registry = ToolRegistry()
     register_all_builtin_tools(registry)
     register_ast_tools(registry)
@@ -124,19 +142,18 @@ def create_engine(workspace_dir: str = None) -> QueryEngine:
     memory_store = SQLiteMemoryStore()
     memory_manager = MemoryManager(store=memory_store, llm=llm)
     register_memory_tools(registry, memory_store, memory_manager)
-
-    # ── 7b. 规划工具 ──
     register_plan_tools(registry)
 
-    # ── 7c. MCP 工具 ──
+    # ── 7b. MCP 工具 ──
     try:
         register_mcp_tools(registry)
     except Exception as e:
-        log.debug("MCP 跳过: %s", e)
+        log.warning("MCP 工具注册失败（已跳过）: %s", e)
 
     log.info("工具注册完成: %d 个工具", registry.tool_count)
 
     # ── 8. Checkpoint ──
+    _LANGCODE_DIR.mkdir(parents=True, exist_ok=True)
     ckpt_conn = sqlite3.connect(_CHECKPOINT_DB, check_same_thread=False)
     checkpointer = SqliteSaver(ckpt_conn)
     checkpointer.setup()
@@ -163,40 +180,10 @@ def create_engine(workspace_dir: str = None) -> QueryEngine:
     session_store = SessionStore()
     session_id = uuid.uuid4().hex[:12]
     current_session = SessionRecord(id=session_id, workspace=workspace)
-
-    # ── 11b. Transcript JSONL 持久化 ──
     transcript = TranscriptWriter(session_id=session_id)
 
     config_dict = {"configurable": {"thread_id": session_id}}
     platform_prompt = get_platform_prompt()
-
-    # Agent 提示词
-    agent_prompt = """你叫LangCode，是一个专为编程特化的智能体，也是多 Agent 系统的协调者。
-
-## 核心行为
-
-- **简单任务**（只需一步操作，如读文件、回答问题）→ 直接调用对应工具
-- **复杂任务**（需要3步及以上操作）→ 调用 write_todo 工具创建执行计划
-- **专项任务**（代码研究、代码审查）→ 调用对应的 delegate 工具委派给专业 Agent
-
-## 工具使用优先级
-
-1. 结构化代码修改 → ast_rename / ast_add_param
-2. 精确替换 → edit_file
-3. 新建/覆盖 → write_file
-
-## 计划管理
-
-- 创建计划后，系统会在每轮对话中注入当前计划和执行规则
-- 严格按照计划执行，每完成一步及时调用 update_todo 标记完成
-- 需要调整计划时调用 modify_todo
-
-## 行为准则
-
-- 每次工具调用应有明确目的，避免无意义的重复调用
-- 当用户表达偏好或做出重要决策时，使用 memory_save 记住
-- 回答简洁准确，必要时附上代码示例
-"""
 
     # ── 12. ToolUseContext ──
     tool_context = ToolUseContext(
@@ -213,7 +200,7 @@ def create_engine(workspace_dir: str = None) -> QueryEngine:
         workspace_dir=workspace,
         graph=supervisor_graph,
         config=config_dict,
-        agent_prompt=agent_prompt,
+        agent_prompt=_AGENT_PROMPT,
         platform_prompt=platform_prompt,
         memory_store=memory_store,
         memory_manager=memory_manager,
@@ -226,6 +213,7 @@ def create_engine(workspace_dir: str = None) -> QueryEngine:
         analytics=analytics,
         transcript=transcript,
     ))
+    engine._ckpt_conn = ckpt_conn
 
     return engine
 
@@ -239,7 +227,10 @@ def main():
         sys.exit(1)
     else:
         from LangCode.cli.repl import run_repl
-        run_repl(engine)
+        try:
+            run_repl(engine)
+        finally:
+            engine.close()
 
 
 if __name__ == "__main__":

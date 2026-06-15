@@ -99,7 +99,8 @@ def _build_command(command: str) -> str:
     """
     shell = get_shell()
     if shell:
-        return f'"{shell}" -c "{command}"'
+        escaped = command.replace('"', '\\"')
+        return f'"{shell}" -c "{escaped}"'
     return command
 
 

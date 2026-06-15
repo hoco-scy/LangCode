@@ -86,6 +86,13 @@ class QueryEngine:
         self.graph = engine_config.graph
         self.config = engine_config.config
         self._initialized = False
+        self._ckpt_conn = None  # 由 main.py 注入，close() 时释放
+
+    def close(self):
+        """释放数据库连接等资源。"""
+        if self._ckpt_conn:
+            self._ckpt_conn.close()
+            self._ckpt_conn = None
 
     def _ensure_initialized(self):
         """首次调用时注入系统提示词"""
