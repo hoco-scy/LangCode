@@ -3,6 +3,7 @@
 从 repl.py 提取的命令处理逻辑，支持独立扩展。
 
 参考 Claude Code 斜杠命令系统：
+- /help: 显示可用命令
 - /mode: 权限模式管理
 - /session: 会话信息
 - /plan: 计划管理
@@ -34,6 +35,10 @@ def handle_command(engine: "QueryEngine", user_input: str) -> bool:
         True 表示命令已处理，False 表示未知命令
     """
     cmd = user_input.strip()
+
+    # ── /help ──
+    if cmd == "/help":
+        return _cmd_help(engine)
 
     # ── /mode ──
     if cmd == "/mode" or cmd == "/mode status":
@@ -173,4 +178,25 @@ def _cmd_analytics(engine: "QueryEngine") -> bool:
             print(f"  {k}: {v}")
     except Exception:
         print("遥测数据不可用。")
+    return True
+
+
+_HELP_ENTRIES = [
+    ("/help",      "显示本帮助信息"),
+    ("/mode",      "查看当前权限模式"),
+    ("/mode <m>",  "切换权限模式 (plan/accept_edits/default/dont_ask/bypass)"),
+    ("/session",   "显示当前会话信息"),
+    ("/plan",      "显示当前执行计划"),
+    ("/memory",    "显示长期记忆列表"),
+    ("/skills",    "列出可用技能"),
+    ("/analytics", "显示遥测数据"),
+    ("/exit",      "退出"),
+]
+
+
+def _cmd_help(engine: "QueryEngine") -> bool:
+    """显示所有可用斜杠命令。"""
+    print("可用命令：")
+    for name, desc in _HELP_ENTRIES:
+        print(f"  {name:<16s} {desc}")
     return True

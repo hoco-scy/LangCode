@@ -144,6 +144,26 @@ class TestAnalyticsCommand:
         assert result is True
 
 
+class TestHelpCommand:
+    def test_help(self, engine, capsys):
+        result = handle_command(engine, "/help")
+        assert result is True
+        captured = capsys.readouterr()
+        assert "/help" in captured.out
+        assert "/mode" in captured.out
+        assert "/session" in captured.out
+        assert "/plan" in captured.out
+        assert "/memory" in captured.out
+        assert "/exit" in captured.out
+
+    def test_help_lists_all_commands(self, engine, capsys):
+        from LangCode.cli.commands import _HELP_ENTRIES
+        handle_command(engine, "/help")
+        captured = capsys.readouterr()
+        for name, _ in _HELP_ENTRIES:
+            assert name in captured.out, f"{name} 未出现在 /help 输出中"
+
+
 class TestUnknownCommand:
     def test_unknown_command(self, engine):
         result = handle_command(engine, "/unknown")
