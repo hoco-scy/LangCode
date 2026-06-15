@@ -1,11 +1,11 @@
 """agents.skills.runner — Skill 执行器。
 
-Fork 子Agent 执行 Skill。
+直接调用 LLM：SystemMessage(skill prompt) + HumanMessage(args)。
+需要工具时走简单 tool loop，不需要子图。
 """
 
 from __future__ import annotations
 
-import uuid
 from typing import Any
 
 from LangCode.agents.skills.loader import SkillDefinition
@@ -15,17 +15,16 @@ log = get_logger("agents.skills.runner")
 
 
 class SkillRunner:
-    """Skill 执行器 — Fork 子Agent 执行 Skill。
+    """Skill 执行器 — 直接调用 LLM。
 
     用法：
-        runner = SkillRunner(llm, tools, checkpointer)
-        result = await runner.run_skill(skill, "审查 src/main.py", parent_ctx)
+        runner = SkillRunner(llm, tools)
+        result = await runner.run_skill(skill, "审查 src/main.py")
     """
 
     def __init__(self, llm: Any, tools: list, checkpointer: Any = None):
         self.llm = llm
         self.tools = tools
-        self.checkpointer = checkpointer
 
     async def run_skill(
         self,
@@ -38,67 +37,54 @@ class SkillRunner:
         Args:
             skill: Skill 定义
             args: 用户传入的参数
-            parent_context: 父 Agent 上下文
 
         Returns:
             Skill 执行结果（文本）
         """
-        from langchain_core.messages import HumanMessage, SystemMessage
-        from langgraph.graph import StateGraph, START, END
-        from LangCode.shared.types import LCState
+        from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 
         log.info("执行 Skill: %s, args: %s", skill.name, args[:100])
 
-        # 构建 Skill 提示词
-        skill_prompt = skill.prompt
-        if args:
-            skill_prompt += f"\n\n## 用户参数\n{args}"
+        # 构建消息：system prompt + 用户参数
+        messages = [SystemMessage(content=skill.prompt)]
+        messages.append(HumanMessage(content=args or skill.name))
 
         # 过滤工具
-        skill_tools = self.tools
+        skill_tools = []
         if skill.allowed_tools:
             skill_tools = [
                 t for t in self.tools
                 if getattr(t, "name", "") in skill.allowed_tools
             ]
 
-        # 构建子图
-        def _call_llm(state):
-            messages = list(state["messages"])
-            messages.insert(0, SystemMessage(content=skill_prompt))
-            bound = self.llm.bind_tools(skill_tools)
-            response = bound.invoke(messages)
-            return {"messages": [response]}
+        # 调用 LLM（有工具时走 tool loop）
+        if skill_tools:
+            return await self._run_with_tools(messages, skill_tools)
 
-        def _should_use_tools(state):
-            from langchain_core.messages import AIMessage
-            last = state["messages"][-1]
-            if isinstance(last, AIMessage) and last.tool_calls:
-                return "tools"
-            return "__end__"
+        response = self.llm.invoke(messages)
+        return response.content or "[Skill 执行完成，无文本输出]"
 
-        from langgraph.prebuilt import ToolNode
-        builder = StateGraph(LCState)
-        builder.add_node("agent", _call_llm)
-        builder.add_node("tools", ToolNode(tools=skill_tools))
-        builder.add_edge(START, "agent")
-        builder.add_conditional_edges("agent", _should_use_tools, {
-            "tools": "tools", "__end__": END,
-        })
-        builder.add_edge("tools", "agent")
+    async def _run_with_tools(self, messages: list, tools: list) -> str:
+        """带工具的简单 tool loop（最多 5 轮）。"""
+        from langchain_core.messages import AIMessage, ToolMessage
 
-        graph = builder.compile(checkpointer=self.checkpointer)
+        bound = self.llm.bind_tools(tools)
+        tool_map = {t.name: t for t in tools}
 
-        # 执行（skill 是一次性执行，每次生成独立 thread_id）
-        thread_id = f"skill-{skill.name}-{uuid.uuid4().hex[:8]}"
-        result = graph.invoke(
-            {"messages": [HumanMessage(content=args or skill.name)]},
-            {"configurable": {"thread_id": thread_id}},
-        )
+        for _ in range(5):
+            response: AIMessage = bound.invoke(messages)
+            messages.append(response)
 
-        # 提取最后一条 AI 消息
-        for msg in reversed(result.get("messages", [])):
-            if hasattr(msg, "type") and msg.type == "ai":
-                return msg.content or "[Skill 执行完成，无文本输出]"
+            if not response.tool_calls:
+                return response.content or "[Skill 执行完成，无文本输出]"
 
-        return "[Skill 执行完成]"
+            for tc in response.tool_calls:
+                tool = tool_map.get(tc["name"])
+                if tool:
+                    result = tool.invoke(tc["args"])
+                    messages.append(ToolMessage(
+                        content=str(result)[:2000],
+                        tool_call_id=tc["id"],
+                    ))
+
+        return messages[-1].content if isinstance(messages[-1], AIMessage) else "[Skill 执行超限]"

@@ -161,7 +161,7 @@ def create_engine(workspace_dir: str = None) -> QueryEngine:
     )
 
     # ── 10b. SkillRunner ──
-    skill_runner = SkillRunner(llm=llm, tools=all_lc_tools, checkpointer=checkpointer)
+    skill_runner = SkillRunner(llm=llm, tools=all_lc_tools)
 
     # ── 11. 会话管理 ──
     session_store = SessionStore()
