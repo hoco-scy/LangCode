@@ -2,7 +2,7 @@ import logging
 import os
 import sys
 
-LOG_LEVEL = os.getenv("LC_LOG_LEVEL", "ERROR").upper()
+LOG_LEVEL = os.getenv("LC_LOG_LEVEL", "INFO").upper()
 
 _formatter = logging.Formatter(
     "[%(asctime)s] %(levelname)-7s %(name)s | %(message)s",
