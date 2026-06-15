@@ -65,13 +65,13 @@ class SkillRunner:
         return response.content or "[Skill 执行完成，无文本输出]"
 
     async def _run_with_tools(self, messages: list, tools: list) -> str:
-        """带工具的简单 tool loop（最多 5 轮）。"""
+        """带工具的 tool loop。"""
         from langchain_core.messages import AIMessage, ToolMessage
 
         bound = self.llm.bind_tools(tools)
         tool_map = {t.name: t for t in tools}
 
-        for _ in range(5):
+        while True:
             response: AIMessage = bound.invoke(messages)
             messages.append(response)
 
@@ -83,8 +83,6 @@ class SkillRunner:
                 if tool:
                     result = tool.invoke(tc["args"])
                     messages.append(ToolMessage(
-                        content=str(result)[:2000],
+                        content=str(result),
                         tool_call_id=tc["id"],
                     ))
-
-        return messages[-1].content if isinstance(messages[-1], AIMessage) else "[Skill 执行超限]"
