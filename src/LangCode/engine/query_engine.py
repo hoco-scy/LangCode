@@ -67,6 +67,7 @@ class QueryEngineConfig:
     tool_context: Any = None                # ToolUseContext
     analytics: Any = None                   # AnalyticsTracker
     transcript: Any = None                  # TranscriptWriter（JSONL 持久化）
+    skill_runner: Any = None                # SkillRunner
 
 
 class QueryEngine:

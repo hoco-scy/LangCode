@@ -191,6 +191,8 @@ _HELP_ENTRIES = [
     ("/skills",    "列出可用技能"),
     ("/analytics", "显示遥测数据"),
     ("/exit",      "退出"),
+    ("",           ""),
+    ("/<skill>",   "执行自定义技能（如 /code-review）"),
 ]
 
 
@@ -198,5 +200,8 @@ def _cmd_help(engine: "QueryEngine") -> bool:
     """显示所有可用斜杠命令。"""
     print("可用命令：")
     for name, desc in _HELP_ENTRIES:
-        print(f"  {name:<16s} {desc}")
+        if name:
+            print(f"  {name:<16s} {desc}")
+        elif desc:
+            print(f"  {desc}")
     return True
