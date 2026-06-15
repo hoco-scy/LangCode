@@ -100,10 +100,14 @@ def build_supervisor_graph(
     # ── 子图路径 ──
     sub_agent_graphs = sub_agent_graphs or {}
     if sub_agent_graphs:
+        # 条件边：根据 route 选择对应子图（非无条件扇出）
+        sub_route_map = {f"sub_{name}": f"sub_{name}" for name in sub_agent_graphs}
+        sub_route_map["__end__"] = END
+
         builder.add_node("delegate_router", _delegate_router)
+        builder.add_conditional_edges("delegate_router", _select_sub_agent, sub_route_map)
         for name, sub_graph in sub_agent_graphs.items():
             builder.add_node(f"sub_{name}", sub_graph)
-            builder.add_edge("delegate_router", f"sub_{name}")
             builder.add_edge(f"sub_{name}", END)
 
     return builder.compile(checkpointer=checkpointer)
@@ -131,7 +135,7 @@ def build_explore_subgraph(llm: ChatOpenAI, tools: list[BaseTool],
     builder.add_node("summarize_llm", _make_call_llm(llm, []))
 
     builder.add_edge(START, "agent")
-    builder.add_conditional_edges("agent", should_use_tools, {
+    builder.add_conditional_edges("agent", _explore_routing, {
         "tools": "tools",
         "summarize": "summarize",
     })
@@ -263,6 +267,16 @@ def _delegate_router(state: LCState) -> dict:
     return {}
 
 
+def _select_sub_agent(state: LCState) -> str:
+    """根据 route 选择对应的子图节点名"""
+    route = state.get("route", "")
+    if route == "explore":
+        return "sub_explore"
+    if route == "review":
+        return "sub_review"
+    return "__end__"
+
+
 # ============================================================
 #  Explore 子图节点
 # ============================================================
@@ -279,6 +293,14 @@ def _explore_summarize_node(state: LCState) -> dict:
         "不要再调用工具。"
     ))
     return {"messages": [msg]}
+
+
+def _explore_routing(state: LCState) -> str:
+    """Explore Agent 路由：有 tool_calls → tools，否则 → summarize（强制生成摘要）"""
+    last = state["messages"][-1] if state.get("messages") else None
+    if isinstance(last, AIMessage) and last.tool_calls:
+        return "tools"
+    return "summarize"
 
 
 # ============================================================
