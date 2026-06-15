@@ -8,6 +8,8 @@ WebSearchTool 启动时可选跳过：
 """
 
 import os
+import re
+import html as html_mod
 import httpx
 from langchain.tools import tool
 from pydantic import BaseModel, Field
@@ -27,21 +29,48 @@ class FetchAPIInput(BaseModel):
 
 @tool("fetch_api", args_schema=FetchAPIInput)
 def fetch_api(url: str):
-    """发送 GET 请求获取外部 API 数据，返回响应内容。仅支持 GET，不支持 POST/PUT 等。"""
+    """发送 GET 请求获取外部 API 数据或网页内容，返回响应内容。自动跟随重定向，HTML 页面会自动转为可读文本。仅支持 GET。"""
     from LangCode.shared.models import FetchAPIResponse
     log.info("fetch_api: url=%s", url)
     try:
-        with httpx.Client() as client:
+        with httpx.Client(follow_redirects=True, timeout=15) as client:
             resp = client.get(url)
             log.debug("fetch_api 成功: status=%d size=%d", resp.status_code, len(resp.content))
+
+            content = resp.text
+            content_type = resp.headers.get("content-type", "")
+            if "html" in content_type:
+                content = _html_to_text(content)
+
             return FetchAPIResponse(
                 success=True,
-                content=resp.text,
+                content=content,
                 status_code=resp.status_code,
             )
     except Exception as e:
         log.error("fetch_api 失败: %s", e)
         return FetchAPIResponse(success=False, error=str(e))
+
+
+def _html_to_text(raw_html: str) -> str:
+    """将 HTML 转为可读纯文本（纯标准库，无额外依赖）。"""
+    # 移除 script / style 标签及其内容
+    text = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", raw_html, flags=re.DOTALL | re.IGNORECASE)
+    # 块级标签换行
+    text = re.sub(r"<(br|hr|/p|/div|/li|/tr|/h[1-6])[^>]*>", "\n", text, flags=re.IGNORECASE)
+    # 去除所有剩余标签
+    text = re.sub(r"<[^>]+>", "", text)
+    # 反转义 HTML 实体
+    text = html_mod.unescape(text)
+    # 每行去首尾空白，再过滤掉纯空行，最后合并连续空行为单行
+    lines = [line.strip() for line in text.splitlines()]
+    text = "\n".join(lines)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    # 截断过长内容（节省 token）
+    max_chars = 8000
+    if len(text) > max_chars:
+        text = text[:max_chars] + "\n...[内容已截断]"
+    return text
 
 
 # ============================================================

@@ -46,7 +46,7 @@ class TestWebSearch:
         assert result["success"] is False
         assert "API key" in result["error"]
 
-    @patch.dict("os.environ", {"TAVILY_API_KEY": "test-key"})
+    @patch.dict("os.environ", {"TAVILY_API_KEY": "test-key"}, clear=True)
     @patch("LangCode.tools.builtin.web.httpx.post")
     def test_tavily_success(self, mock_post):
         mock_resp = MagicMock()
@@ -63,7 +63,7 @@ class TestWebSearch:
         assert len(result["results"]) == 1
         assert result["results"][0]["title"] == "Result 1"
 
-    @patch.dict("os.environ", {"TAVILY_API_KEY": "test-key"})
+    @patch.dict("os.environ", {"TAVILY_API_KEY": "test-key"}, clear=True)
     @patch("LangCode.tools.builtin.web.httpx.post")
     def test_tavily_failure(self, mock_post):
         mock_post.side_effect = Exception("API error")
@@ -71,7 +71,7 @@ class TestWebSearch:
         result = web_search.invoke({"query": "test", "max_results": 5})
         assert result["success"] is False
 
-    @patch.dict("os.environ", {"SERPAPI_API_KEY": "test-key"})
+    @patch.dict("os.environ", {"SERPAPI_API_KEY": "test-key"}, clear=True)
     @patch("LangCode.tools.builtin.web.httpx.get")
     def test_serpapi_success(self, mock_get):
         mock_resp = MagicMock()
