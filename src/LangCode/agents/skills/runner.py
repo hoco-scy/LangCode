@@ -62,14 +62,14 @@ class SkillRunner:
             ]
 
         # 构建子图
-        def _call_llm(state: LCState) -> dict:
+        def _call_llm(state):
             messages = list(state["messages"])
             messages.insert(0, SystemMessage(content=skill_prompt))
             bound = self.llm.bind_tools(skill_tools)
             response = bound.invoke(messages)
             return {"messages": [response]}
 
-        def _should_use_tools(state: LCState) -> str:
+        def _should_use_tools(state):
             from langchain_core.messages import AIMessage
             last = state["messages"][-1]
             if isinstance(last, AIMessage) and last.tool_calls:
