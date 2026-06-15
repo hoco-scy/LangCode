@@ -7,11 +7,12 @@ from LangCode.shared.types import LCState, _last_wins
 
 class TestLCState:
     def test_v2_fields(self):
-        """验证 v2 最终版只有 7 个字段"""
+        """验证 v2 最终版字段集合"""
         fields = set(LCState.__annotations__.keys())
         expected = {
             "messages", "route", "current_plan", "task_description",
             "verify_errors", "memory_context", "supervisor_iterations",
+            "_processed_tool_ids", "_pending_delegations",
         }
         assert fields == expected, f"多余字段: {fields - expected}, 缺少字段: {expected - fields}"
 

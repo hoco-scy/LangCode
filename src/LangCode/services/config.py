@@ -33,6 +33,7 @@ CONFIG_DEFAULTS: dict[str, Any] = {
     "verify.auto_enabled": True,
     "verify.run_tests": True,
     "context.max_tokens": 80_000,
+    "shell.bash_path": "",              # Windows: git-bash.exe 路径，留空则用 cmd.exe
 }
 
 # ── 环境变量映射 ──
@@ -41,6 +42,7 @@ _ENV_MAPPING = {
     "LC_MODEL_NAME": "model.name",
     "LC_API_KEY": "model.api_key",
     "LC_BASE_URL": "model.base_url",
+    "LC_BASH_PATH": "shell.bash_path",
 }
 
 
@@ -143,6 +145,10 @@ class Config:
     def get_token_budget(self) -> Optional[int]:
         """获取 Token 预算限制。None 表示不限制。"""
         return self.get("session.token_budget", None)
+
+    def get_bash_path(self) -> str:
+        """获取 bash 路径（Windows: git-bash.exe 路径，其他平台: /bin/bash）。"""
+        return self.get("shell.bash_path", "")
 
 
 def _flatten_dict(d: dict, prefix: str = "") -> dict[str, Any]:

@@ -15,7 +15,16 @@
 from __future__ import annotations
 
 import sys
+import os
 from typing import TYPE_CHECKING
+
+# Windows 控制台默认 GBK 无法显示 emoji，强制 UTF-8
+if sys.platform == "win32":
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 from LangCode.shared.logger import get_logger
 
@@ -57,7 +66,12 @@ def run_repl(engine: QueryEngine) -> None:
             if handled:
                 continue
 
-        _consume_and_print(engine.submit_message(user_input))
+        try:
+            _consume_and_print(engine.submit_message(user_input))
+        except RuntimeError as e:
+            if "cannot schedule new futures after shutdown" in str(e):
+                break
+            raise
 
 
 def _consume_and_print(events) -> None:

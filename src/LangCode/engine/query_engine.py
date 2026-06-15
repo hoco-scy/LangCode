@@ -184,7 +184,7 @@ class QueryEngine:
             for mode, data in events:
                 if mode == "messages":
                     chunk, _metadata = data
-                    if isinstance(chunk, AIMessageChunk) and chunk.content:
+                    if isinstance(chunk, (AIMessage, AIMessageChunk)) and chunk.content:
                         yield EngineEvent(type="text_chunk", data=chunk.content)
 
                 elif mode == "updates":

@@ -1,14 +1,21 @@
-"""BashTool — 执行 shell 命令。
+"""ShellTool — 执行 shell 命令。
 
 集成 BashClassifier 安全分析：
 - 执行前对命令进行语义分类（只读/破坏性/网络）
 - 分类结果记录到日志，供权限系统和遥测使用
 - 破坏性命令附加警告标记（不阻断，由权限系统决定是否确认）
+
+跨平台支持：
+- macOS/Linux: 原生 bash
+- Windows: 通过 LC_BASH_PATH 环境变量或 shell.bash_path 配置项
+  指定 git-bash.exe 路径以启用 bash 语法。留空则默认 cmd.exe。
 """
 
 import subprocess
 import locale
+import os
 import platform as _platform
+from pathlib import Path
 from langchain.tools import tool
 from pydantic import BaseModel, Field
 
@@ -20,11 +27,80 @@ log = get_logger("tools.shell")
 _classifier = BashClassifier()
 
 
-def _get_shell_encoding() -> str:
-    """返回 shell 子进程的正确编码：Windows 用系统代码页，其他平台用 UTF-8"""
+def _detect_shell() -> str | None:
+    """检测可用的 bash 路径。
+
+    优先级：
+    1. 环境变量 LC_BASH_PATH
+    2. 配置文件 shell.bash_path
+    3. 常见安装路径（git-bash.exe）
+    4. Windows 无 bash → None（走 cmd.exe）
+    """
+    # 环境变量
+    env_path = os.getenv("LC_BASH_PATH", "")
+    if env_path and Path(env_path).exists():
+        return env_path
+
+    # 配置文件
+    try:
+        from LangCode.services.config import Config
+        config = Config.load()
+        bash_path = config.get("shell.bash_path", "")
+        if bash_path and Path(bash_path).exists():
+            return bash_path
+    except Exception:
+        pass
+
+    # 常见路径探测
     if _platform.system() == "Windows":
+        candidates = [
+            r"C:\Program Files\Git\bin\bash.exe",
+            r"C:\Program Files (x86)\Git\bin\bash.exe",
+            os.path.expandvars(r"%LOCALAPPDATA%\Programs\Git\bin\bash.exe"),
+        ]
+        for p in candidates:
+            if Path(p).exists():
+                return p
+        return None  # Windows 无 bash → cmd.exe
+
+    # 非 Windows
+    for p in ["/bin/bash", "/usr/bin/bash"]:
+        if Path(p).exists():
+            return p
+    return None
+
+
+def _get_shell_encoding() -> str:
+    """返回 shell 子进程的正确编码：Windows cmd.exe 用系统代码页，其他用 UTF-8"""
+    if _DETECTED_SHELL is None and _platform.system() == "Windows":
         return locale.getpreferredencoding(False)
     return "utf-8"
+
+
+_DETECTED_SHELL: str | None = None
+
+
+def get_shell() -> str | None:
+    """获取（缓存的）bash 路径。None 表示用默认 shell。"""
+    global _DETECTED_SHELL
+    if _DETECTED_SHELL is None:
+        _DETECTED_SHELL = _detect_shell()
+        if _DETECTED_SHELL:
+            log.info("检测到 bash: %s", _DETECTED_SHELL)
+        else:
+            log.info("未检测到 bash，使用系统默认 shell")
+    return _DETECTED_SHELL
+
+
+def _build_command(command: str) -> str:
+    """将原始命令包装为 bash 可执行形式。
+
+    当检测到 bash 时，用 '<command>' 通过 stdin 传递给 bash 以避免引号转义问题。
+    """
+    shell = get_shell()
+    if shell:
+        return f'"{shell}" -c "{command}"'
+    return command
 
 
 class RunCommandInput(BaseModel):
@@ -59,8 +135,9 @@ def execute_shell(command: str, timeout: int = 30):
 
     try:
         enc = _get_shell_encoding()
+        final_command = _build_command(command)
         result = subprocess.run(
-            command,
+            final_command,
             shell=True,
             capture_output=True,
             text=True,

@@ -44,6 +44,7 @@ class LLMClient:
             api_key=model_cfg["api_key"] or None,
             base_url=model_cfg["base_url"] or None,
             temperature=model_cfg["temperature"],
+            max_retries=3,
         )
 
         self.fallback_model: Optional[ChatOpenAI] = None
@@ -54,6 +55,7 @@ class LLMClient:
                 api_key=model_cfg["api_key"] or None,
                 base_url=model_cfg["base_url"] or None,
                 temperature=0,
+                max_retries=3,
             )
             log.info("已配置 fallback 模型: %s", fallback_name)
 
