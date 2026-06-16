@@ -1,7 +1,7 @@
 [project]
 name = "langcode"
 version = "0.1.0"
-description = "Add your description here"
+description = "Production-grade AI Code Agent on LangGraph"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
