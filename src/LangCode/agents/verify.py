@@ -157,7 +157,7 @@ def _ruff_check(files: list[str]) -> list[str]:
             [sys.executable, "-m", "ruff", "check"] + files,
             capture_output=True, text=True, encoding="utf-8", timeout=30,
         )
-        if result.returncode != 0:
+        if result.returncode != 0 and result.stdout.strip():
             errors.append(f"[ruff] {result.stdout.strip()[-500:]}")
     except FileNotFoundError:
         pass

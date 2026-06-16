@@ -1,6 +1,6 @@
 # LangCode
 
-基于 LangGraph 构建的 AI Code Agent，对标 Claude Code 工程水准的五层架构重构。
+基于 LangGraph 构建的多 Agent 代码生成系统，对标 Claude Code 工程水准的五层架构重构。
 
 ## 核心特性
 
@@ -325,7 +325,7 @@ CONFIG_DEFAULTS = {
 |------|------|
 | 代码规模 | **7K LOC** |
 | 模块数 | **71 modules** |
-| 测试数 | **44 tests** |
+| 测试数 | **486 tests** |
 | 内置工具 | **30+ built-in tools** |
 
 **为什么选择 LangCode：**
@@ -334,7 +334,7 @@ CONFIG_DEFAULTS = {
 - **纯 tool calling 路由** — 无脆弱的文本解析，LLM 输出结构化 tool_calls 直接驱动分发
 - **代码修改后强制验证** — auto_verify 不靠提示词"请检查"，而是图节点强制跑 compile/import/lint/test
 - **AST 语义级编辑** — 基于 tree-sitter 的重命名、加参数、加方法，比纯文本替换更安全
-- **生产级错误恢复** — 截断升级、prompt 压缩、模型 fallback、断路器，长会话不崩溃
+- **完善的错误恢复** — 截断升级、prompt 压缩、模型 fallback、断路器，长会话不崩溃
 - **内存安全** — PythonTool 有内存看门狗，BashTool 有命令分类器，路径沙箱锁定工作目录
 
 ## 技术栈
