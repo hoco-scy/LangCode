@@ -102,4 +102,4 @@ class TestConfigGetModel:
         assert c.get_token_budget() == 50000
 
         c2 = Config([CONFIG_DEFAULTS.copy()])
-        assert c2.get_token_budget() is None
+        assert c2.get_token_budget() == 200_000

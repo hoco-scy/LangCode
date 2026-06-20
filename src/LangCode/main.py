@@ -40,13 +40,15 @@ from LangCode.agents.prompts import get_platform_prompt
 from LangCode.shared.logger import get_logger
 from LangCode.tools.registry import (
     ToolRegistry, register_all_builtin_tools, register_ast_tools,
-    register_memory_tools, register_plan_tools, register_mcp_tools,
+    register_mcp_tools, TAG_READ_ONLY, TAG_PLAN_ALLOWED,
 )
 from LangCode.tools.context import ToolUseContext
 from LangCode.state.session import SessionStore, SessionRecord
 from LangCode.state.transcript import TranscriptWriter, TranscriptReader
 from LangCode.memory.store import SQLiteMemoryStore
 from LangCode.memory.manager import MemoryManager
+from LangCode.memory.tools import create_memory_tools
+from LangCode.planning.todo_tools import create_todo_tools
 from LangCode.permissions.rules import RuleEngine
 from LangCode.permissions.sandbox import PathSandbox
 
@@ -138,11 +140,19 @@ def create_engine(workspace_dir: str = None) -> QueryEngine:
     register_all_builtin_tools(registry)
     register_ast_tools(registry)
 
-    # ── 7. 记忆系统 ──
+    # ── 7. 记忆系统 + Todo 工具 ──
     memory_store = SQLiteMemoryStore()
     memory_manager = MemoryManager(store=memory_store, llm=llm)
-    register_memory_tools(registry, memory_store, memory_manager)
-    register_plan_tools(registry)
+
+    # main.py 统一编排工具注册（registry 不知道 planning/memory 的存在）
+    registry.register_many(
+        create_memory_tools(memory_store, memory_manager),
+        tags=frozenset({TAG_READ_ONLY}),
+    )
+    registry.register_many(
+        create_todo_tools(),
+        tags=frozenset({TAG_PLAN_ALLOWED}),
+    )
 
     # ── 7b. MCP 工具 ──
     try:
@@ -183,7 +193,10 @@ def create_engine(workspace_dir: str = None) -> QueryEngine:
     transcript = TranscriptWriter(session_id=session_id)
 
     config_dict = {"configurable": {"thread_id": session_id}}
-    platform_prompt = get_platform_prompt()
+
+    # bash_path 检测（main.py 是 composition root，负责跨层协调）
+    from LangCode.tools.builtin.shell import get_shell
+    platform_prompt = get_platform_prompt(bash_path=get_shell())
 
     # ── 12. ToolUseContext ──
     tool_context = ToolUseContext(

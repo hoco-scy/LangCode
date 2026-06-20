@@ -1,6 +1,8 @@
-# LangCode v2.0 — 最终架构设计文档
+# LangCode v2.1 — 最终架构设计文档
 
 > 对标 Claude Code v2.1.x 源码拆解，基于 LangCode 现有代码资产的全面重构方案。
+>
+> v2.1 变更（2026-06-20）：工具系统简化、控制流反转修复、L2→L3 依赖消除。详见 [附录 A](#附录-a-v21-变更日志)。
 
 ---
 
@@ -134,8 +136,8 @@ src/LangCode/
 │
 ├── tools/                      # Layer 3: 工具系统
 │   ├── __init__.py
-│   ├── base.py                 # Tool<I,O> ABC: 30+方法统一接口
-│   ├── registry.py             # ToolRegistry: 注册→发现→过滤→Schema
+│   ├── base.py                 # ToolResult: 工具执行结果封装（v2.1: 删除 Tool ABC）
+│   ├── registry.py             # ToolRegistry: 注册→过滤→Schema (v2.1: ToolEntry + tags)
 │   ├── context.py              # ToolUseContext: 依赖注入载体（15+字段）
 │   ├── execution.py            # StreamingToolExecutor: queued→executing→completed→yielded
 │   ├── result.py               # ToolResult<T> + context_modifier
@@ -1562,75 +1564,33 @@ class SkillRunner:
 
 ## 6. Layer 3: tools — 工具系统
 
-### 6.1 tools/base.py — 统一工具接口
+### 6.1 tools/base.py — 工具执行结果（v2.1 简化）
+
+> **v2.1 变更**：删除 `Tool[Input, Output]` ABC。LangCode 基于 LangGraph 生态，工具统一使用 LangChain `@tool` 装饰器定义。Tool ABC 是 Claude Code 架构的投影（Claude Code 是纯 TS CLI，无框架），在 LangGraph 中无不可替代职责。
+>
+> **删除理由**：
+> - 0 个 builtin 继承 Tool ABC（全部用 `@tool`）
+> - `check_permissions()` 空实现，权限由 `permissions/` 独立承担
+> - `is_read_only()` 等分类改为注册时 tags 声明
+> - `to_langchain_tool()` 用 `nest_asyncio` 做同步包装——绕了一圈回到 LangChain
+>
+> **保留 `ToolResult`**：`StreamingToolExecutor` 和 MCP 适配器需要结果封装（`data` + `new_messages` + `context_modifier`）。
 
 ```python
-"""Tool<I,O> — 统一工具抽象接口。
-
-参考 Claude Code Tool.ts 设计:
-1. 类型参数化: Input Pydantic Model, Output Pydantic Model
-2. 输入驱动的属性推断: is_concurrency_safe(input), is_read_only(input)
-3. 自包含权限检查: check_permissions 是 Tool 自身的方法
-4. 渲染与逻辑分离: 方法可被 UI 层调用
-5. 渐进式增强: 大量方法可选（默认安全值）
-"""
-
-from abc import ABC, abstractmethod
-from typing import Generic, TypeVar
-
-Input = TypeVar("Input", bound=BaseModel)
-Output = TypeVar("Output")
-
-
-class ToolResult(Generic[Output]):
-    """工具执行结果。
-
-    参考 Claude Code ToolResult<T>:
-    - data: 工具输出
-    - new_messages: 可选附加消息（注入到对话历史）
-    - context_modifier: 上下文修改器（仅非并发安全工具可用）
-    """
-    data: Output
-    new_messages: list = None
+class ToolResult:
+    """工具执行结果。"""
+    data: Any
+    new_messages: list = []
     context_modifier: callable | None = None
-
-
-class Tool(ABC, Generic[Input, Output]):
-    """工具抽象基类。每个具体工具必须实现 name, description, input_schema, call,
-    check_permissions。"""
-
-    name: str
-    description: str
-    input_schema: type[BaseModel]
-
-    # ── 生命周期方法 ──
-    @abstractmethod
-    async def call(self, args: Input, context: "ToolUseContext") -> ToolResult[Output]: ...
-
-    @abstractmethod
-    def check_permissions(self, args: Input, context: "ToolUseContext") -> "PermissionResult": ...
-
-    def validate_input(self, args: Input, context: "ToolUseContext") -> list[str]:
-        """输入验证（覆盖实现额外校验）。默认无额外验证。"""
-        return []
-
-    # ── 分类属性（输入驱动！同一工具不同输入可能有不同分类）──
-    def is_concurrency_safe(self, args: Input) -> bool:
-        """可否与其他并发安全工具并行？默认 False（安全优先）"""
-        return False
-
-    def is_read_only(self, args: Input) -> bool:
-        """是否只读？默认 False"""
-        return False
-
-    def is_destructive(self, args: Input) -> bool:
-        """是否破坏性操作（删除、覆盖、发送）？默认 False"""
-        return False
-
-    # ── Schema 生成 ──
-    def to_langchain_tool(self) -> BaseTool: ...
-    def to_openai_schema(self) -> dict: ...
 ```
+
+**工具分类策略变更**（v2.1）：
+
+| v2.0 | v2.1 |
+|------|------|
+| `Tool.is_read_only(args)` 输入驱动 | `registry.register(tool, tags={"read_only"})` 注册时声明 |
+| `Tool.is_destructive(args)` 输入驱动 | `BashClassifier` 在执行前分析（已在 L1 实现） |
+| `_LangChainToolAdapter` 硬编码分类 | 删除 adapter，tags 随工具注册 |
 
 ### 6.2 tools/context.py — ToolUseContext
 
@@ -1684,63 +1644,29 @@ class ToolUseContext:
         ...
 ```
 
-### 6.3 tools/execution.py — 并发调度器
+### 6.3 tools/execution.py — 工具调度器（v2.1 简化）
+
+> **v2.1 变更**：从"并发调度器"简化为"串行调度器"。LangChain BaseTool 无 `is_concurrency_safe` 接口，且当前工具集（文件读写、shell、AST）均为 I/O 密集型，并发收益有限。未来可通过 tags 恢复并发支持。
 
 ```python
-"""StreamingToolExecutor — 工具并发调度器。
-
-参考 Claude Code StreamingToolExecutor 状态机:
-  queued → executing → completed → yielded
-
-分区策略:
-  1. 按 is_concurrency_safe 分组
-  2. 并发安全组 → asyncio.gather 并行执行
-  3. 非并发安全 → 逐个串行执行
-  4. Bash 工具失败 → 取消正在运行的兄弟工具
-"""
-
-class ToolStatus(Enum):
-    QUEUED = "queued"
-    EXECUTING = "executing"
-    COMPLETED = "completed"
-    YIELDED = "yielded"
-
-@dataclass
-class TrackedTool:
-    tool_call: dict
-    tool: "Tool"
-    status: ToolStatus = ToolStatus.QUEUED
-    is_concurrency_safe: bool = False
-    result: Optional["ToolResult"] = None
-    error: Optional[Exception] = None
-
 class StreamingToolExecutor:
-    def __init__(self, registry: "ToolRegistry", context: ToolUseContext):
-        ...
+    """串行执行所有工具调用。Yields ToolResult。"""
 
-    def add_tool(self, tool_call: dict):
-        """添加一个待执行的工具调用"""
-        ...
+    async def execute_all(self) -> AsyncGenerator[ToolResult, None]:
+        for tracked in self._tracked:
+            result = await self._execute_one(tracked)
+            if result is not None:
+                yield result
 
-    async def execute_all(self) -> AsyncGenerator["ToolResult", None]:
-        """按分区策略执行所有工具:
-        [并发组] → parallel → [串行1] → serial → [串行2] → serial → ...
-        """
-        ...
-
-    def _partition(self) -> list[dict]:
-        """将 tracked tools 分为 [{concurrent: True, tools: [...]}, ...]"""
-        ...
-
-    async def _execute_concurrent(self, tools) -> AsyncGenerator["ToolResult"]: ...
-    async def _execute_one(self, tracked: TrackedTool) -> "ToolResult":
-        """权限检查 → 执行 → 结果"""
-        ...
+    async def _execute_one(self, tracked: TrackedTool) -> ToolResult:
+        # LangChain BaseTool: invoke(dict) / ainvoke(dict) → str
+        result_str = await _invoke_tool(tracked.tool, tracked.tool_call["args"])
+        return ToolResult(data=result_str)
 ```
 
 ### 6.4 tools/builtin/ — 内置工具
 
-每个工具一个文件，自包含：输入模型 + 工具实现 + check_permissions + 分类属性。
+每个工具一个文件，使用 LangChain `@tool` 装饰器定义。权限由 `permissions/` 模块统一管理。
 
 核心工具：
 - **FileReadTool**: 文本/图片/PDF/Jupyter 多格式读取，支持 offset/limit 分段
@@ -1750,7 +1676,6 @@ class StreamingToolExecutor:
 - **BashTool**: 集成 BashClassifier 安全分析
 - **PythonTool**: 沙箱隔离（禁止 os/subprocess/socket/shutil/ctypes 等模块）+ 256MB 内存看门狗
 - **WebFetchTool + WebSearchTool**: HTML → Markdown 转换
-- **GitTool**: git status/diff/log/blame（新增）
 
 ### 6.5 tools/ast/ — AST 结构化编辑 ★ 差异化功能
 
@@ -2649,9 +2574,9 @@ Phase 5 (1-2天): 收尾
 | **架构分层** | 5 层 (CLI→QE→Tools→Agent→Protocol) | 无分层（shared 17文件混放） | 5 层（Layer 0-5） | ✅ |
 | **查询引擎** | QueryEngine (submitMessage → AsyncGenerator) | main.py 手动 graph.stream() | QueryEngine (submit_message → AsyncGenerator) | ✅ |
 | **核心循环** | queryLoop 状态机 (Continue/Terminal) | 无状态机 | query_loop 状态机 | ✅ |
-| **工具接口** | Tool<I,O,P> 泛型接口 (30+ 方法) | @tool 装饰器（无统一接口） | Tool<I,O> ABC（30+ 方法） | ✅ |
-| **工具注册** | tools.ts 动态组装 + Feature Flag | main.py 手动组装列表 | ToolRegistry + discover | ✅ |
-| **并发调度** | StreamingToolExecutor (queued→executing→completed→yielded) | 串行执行 | StreamingToolExecutor（同理念） | ✅ |
+| **工具接口** | Tool<I,O,P> 泛型接口 (30+ 方法) | @tool 装饰器（无统一接口） | LangChain `@tool` + ToolResult（v2.1: 删除 Tool ABC） | ⚠️ 简化 |
+| **工具注册** | tools.ts 动态组装 + Feature Flag | main.py 手动组装列表 | ToolRegistry + ToolEntry tags（v2.1） | ✅ |
+| **并发调度** | StreamingToolExecutor (queued→executing→completed→yielded) | 串行执行 | StreamingToolExecutor 串行（v2.1: LangChain BaseTool 无并发接口） | ⚠️ 简化 |
 | **权限模式** | 6 层 (plan/acceptEdits/default/dontAsk/bypass/auto) | 2 层 (plan/build) | 5 层 (plan/acceptEdits/default/dontAsk/bypass) | ✅ |
 | **权限规则** | Allow/Deny/Ask + 多源合并（policy>project>user） | 无规则引擎 | RuleEngine + 三层优先级 | ✅ |
 | **Bash 安全** | 引号状态机 + 11种命令替换检测 + Zsh检测 | 无 | BashClassifier（同理念） | ✅ |
@@ -2676,3 +2601,94 @@ Phase 5 (1-2天): 收尾
 | **AST 编辑** | 无 | tree-sitter Python 重命名/加参数/加方法/加import | 同 v1 + LanguagePlugin 扩展点 | ❌ 独有 |
 | **auto_verify** | 无（靠 Verification Agent 独立验证） | CodeAgent write→verify→fix | 主图内联 auto_verify 节点 | ❌ 独有 |
 | **代码量** | ~1800 文件, ~49万行 TS/TSX | ~25 文件, ~4000行 Python | ~55 文件, ~6000行 Python | N/A |
+
+---
+
+## 附录 A: v2.1 变更日志
+
+> 审查日期: 2026-06-20
+> 变更驱动: 架构审查发现 3 类问题 + 1 项接口简化
+
+### A.1 删除 Tool[Input,Output] ABC
+
+**文件**: `tools/base.py`, `tools/__init__.py`, `tools/mcp/adapter.py`, `tools/mcp/__init__.py`
+
+**变更**:
+- `Tool[Input,Output]` ABC 类删除（含 `call()`, `check_permissions()`, `is_read_only()`, `to_langchain_tool()` 等 30+ 方法）
+- `ToolResult` 保留，去掉泛型参数
+- `MCPToolAdapter` 不再继承 `Tool`，改为返回 `BaseTool` 的工厂函数 `_build_mcp_tool()`
+- `tools/__init__.py` 移除 `Tool` re-export
+
+**理由**: LangCode 基于 LangGraph，工具统一用 LangChain `@tool` 定义。Tool ABC 是 Claude Code（纯 TS CLI，无框架）架构的投影，在 LangGraph 生态中无不可替代职责。权限由 `permissions/` 独立承担，schema 由 Pydantic 承担，执行由 LangChain 承担——三层职责均已有人负责。
+
+### A.2 简化 ToolRegistry，删除 _LangChainToolAdapter
+
+**文件**: `tools/registry.py`
+
+**变更**:
+- 新增 `ToolEntry(tool: BaseTool, tags: frozenset[str])` 数据类
+- `register(tool: BaseTool, *, tags)` 替代旧的 `register(tool: Tool)` + 自动适配
+- 删除 `_LangChainToolAdapter` 类（不再需要双接口桥接）
+- 工具分类从 `is_read_only()` 方法调用改为注册时 `tags` 声明
+
+**tags 定义**:
+| tag | 含义 |
+|-----|------|
+| `read_only` | 不修改文件系统 |
+| `destructive` | 不可逆操作 |
+| `plan_allowed` | plan 模式下允许（非只读但安全） |
+
+### A.3 控制流反转：registry 不再知道 L1 模块
+
+**文件**: `tools/registry.py`, `main.py`
+
+**变更**:
+- 删除 `register_plan_tools()` 和 `register_memory_tools()`（从 registry 移到 main.py）
+- `main.py` 直接调用 `create_todo_tools()` / `create_memory_tools()` 后注入 `registry.register_many()`
+- registry 只负责注册，不知道 planning/memory 的存在
+
+**之前**:
+```python
+# tools/registry.py（L3 主动 import L1）
+def register_plan_tools(registry):
+    from LangCode.planning.todo_tools import create_todo_tools
+```
+
+**之后**:
+```python
+# main.py（composition root 统一编排）
+from LangCode.planning.todo_tools import create_todo_tools
+registry.register_many(create_todo_tools(), tags=frozenset({TAG_PLAN_ALLOWED}))
+```
+
+### A.4 L2→L3 向上依赖消除
+
+**文件**: `agents/prompts.py`, `main.py`
+
+**变更**:
+- `get_platform_prompt()` 新增 `bash_path: str | None` 参数
+- `_render_windows_prompt()` 不再 import `tools.builtin.shell.get_shell`
+- `main.py` 中调用 `get_platform_prompt(bash_path=get_shell())`，跨层协调由 composition root 承担
+
+**之前**（L2→L3 向上违规）:
+```python
+# agents/prompts.py
+from LangCode.tools.builtin.shell import get_shell  # L2 import L3 ❌
+```
+
+**之后**:
+```python
+# main.py
+from LangCode.tools.builtin.shell import get_shell  # composition root，合法
+platform_prompt = get_platform_prompt(bash_path=get_shell())
+```
+
+### A.5 v2.1 依赖图验证结果
+
+```
+Upward violations:     NONE — strict monotonic downward ✅
+L3 → L1:               shell.py → permissions.classifier（合法向下）
+L2 → L3:               NONE ✅
+L1 intra-module:       完全隔离 ✅
+main.py composition:   正确连接 L0-L5 ✅
+```

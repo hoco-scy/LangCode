@@ -33,12 +33,16 @@ def load_prompt_file(filename: str) -> str:
         return ""
 
 
-def get_platform_prompt() -> str:
+def get_platform_prompt(bash_path: str | None = None) -> str:
     """生成平台级 system prompt。
 
     优先从 resources/prompts/platform_*.md 加载。
     如果文件包含 Jinja2 模板标记，会尝试渲染（Windows 平台）。
     如果文件不存在则动态生成。
+
+    Args:
+        bash_path: bash 可执行文件路径（由 main.py 传入，消除 L2→L3 依赖）。
+                   Windows 平台用于判断使用 bash 还是 cmd.exe 语法。
     """
     os_name = _platform.system().lower()
     if os_name == "darwin":
@@ -49,7 +53,7 @@ def get_platform_prompt() -> str:
     if content:
         # Jinja2 模板渲染（Windows 平台检测 bash）
         if os_name == "windows" and ("{%" in content or "{{" in content):
-            content = _render_windows_prompt(content)
+            content = _render_windows_prompt(content, bash_path)
         return content
 
     # 动态生成（向后兼容）
@@ -66,15 +70,12 @@ def get_platform_prompt() -> str:
 """
 
 
-def _render_windows_prompt(template: str) -> str:
+def _render_windows_prompt(template: str, bash_path: str | None) -> str:
     """渲染 Windows 平台模板。
 
-    检测 bash 可用性，如果可用则渲染 bash 分支，否则渲染 cmd.exe 分支。
+    使用 bash_path 参数（由 main.py 传入）判断使用 bash 还是 cmd.exe。
     使用简单的字符串替换而非引入 Jinja2 依赖。
     """
-    from LangCode.tools.builtin.shell import get_shell
-
-    bash_path = get_shell()
     if bash_path:
         # bash 可用 → 渲染 {% if bash_path %} 分支
         block, _ = _extract_jinja_block(template, "if bash_path", "else", "endif")

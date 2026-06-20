@@ -43,7 +43,7 @@
 │  services/  state/  permissions/  memory/  planning/             │
 │  LLM客户端 · 分层配置 · Store · Transcript · 权限引擎 · 规划       │
 ├──────────────────────────────────────────────────────────────────┤
-│  Layer 0: 共享内核（5 文件，零业务逻辑）                             │
+│  Layer 0: 共享内核（5 文件，零业务逻辑）                            │
 │  shared/types.py  shared/models.py  shared/errors.py             │
 │  shared/logger.py  shared/__init__.py                            │
 └──────────────────────────────────────────────────────────────────┘

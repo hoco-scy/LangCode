@@ -28,7 +28,7 @@ CONFIG_DEFAULTS: dict[str, Any] = {
     "model.temperature": 0,
     "model.fallback": "",               # fallback 模型名（空则不启用）
     "session.max_turns": 50,
-    "session.token_budget": None,       # None 表示不限制
+    "session.token_budget": 200_000,       # None 表示不限制
     "permission.mode": "default",
     "verify.auto_enabled": True,
     "verify.run_tests": True,
