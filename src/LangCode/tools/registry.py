@@ -36,6 +36,7 @@ class ToolEntry:
 TAG_READ_ONLY = "read_only"
 TAG_DESTRUCTIVE = "destructive"
 TAG_PLAN_ALLOWED = "plan_allowed"
+TAG_CONCURRENT_SAFE = "concurrent_safe"   # 可与其他 concurrent_safe 工具并行执行
 
 # 只读工具默认 tag 集合（main.py 中使用）
 DEFAULT_READ_ONLY_TAGS = frozenset({TAG_READ_ONLY})
@@ -110,6 +111,11 @@ class ToolRegistry:
 
     def __contains__(self, name: str) -> bool:
         return name in self._entries
+
+    def is_concurrent_safe(self, name: str) -> bool:
+        """检查工具是否标记为并发安全。"""
+        entry = self._entries.get(name)
+        return TAG_CONCURRENT_SAFE in entry.tags if entry else False
 
 
 # ── 工具注册函数（只保留不依赖 L1 的） ──

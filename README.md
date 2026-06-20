@@ -7,7 +7,7 @@
 - **五层架构** — Layer 0 共享内核 → Layer 1 基础设施 → Layer 2 Agent 系统 → Layer 3 工具系统 → Layer 4 查询引擎 → Layer 5 CLI
 - **1 主 + 2 子 Agent** — Supervisor 中枢路由，Explore（快速只读搜索）和 Review（代码审查）子图，纯 tool calling 驱动路由
 - **auto\_verify 闭环** — 主图内联验证节点，代码修改后强制执行语法检查、导入检查、lint、测试，不靠提示词
-- **ToolRegistry 工具注册中心** — 30+ 内置工具，按权限模式动态过滤，源头拦截工具可见性
+- **ToolRegistry 工具注册中心** — 30+ 内置工具，ToolEntry tags 分类，按权限模式动态过滤，源头拦截工具可见性
 - **AST 结构化编辑** — 基于 tree-sitter 的语义级代码操作，LangCode 差异化能力（Claude Code 无此项）
 - **五层权限防线** — plan / accept\_edits / default / dont\_ask / bypass，RuleEngine 三层优先级规则匹配
 - **QueryEngine 查询引擎** — AsyncGenerator 全链路流式管道，query\_loop 状态机（Continue/Terminal）
@@ -32,7 +32,7 @@
 │  Layer 3: 工具系统层                                              │
 │  tools/base.py  tools/registry.py  tools/execution.py            │
 │  tools/builtin/  tools/ast/  tools/mcp/                          │
-│  Tool<I,O> 泛型接口 · 注册发现 · 并发调度 · 权限检查                 │
+│  LangChain @tool · ToolRegistry(tags) · 并发调度                   │
 ├──────────────────────────────────────────────────────────────────┤
 │  Layer 2: Agent 系统层                                            │
 │  agents/definition.py  agents/graph_builder.py  agents/router.py │
@@ -91,9 +91,9 @@ LangCode/
 │   │   └── todo_tools.py                # write_todo / update_todo / modify_todo
 │   │
 │   ├── tools/                           # Layer 3: 工具系统
-│   │   ├── base.py                      # Tool<I,O> ABC：统一工具接口
-│   │   ├── registry.py                  # ToolRegistry：注册 → 发现 → 过滤 → Schema
-│   │   ├── context.py                   # ToolUseContext：依赖注入载体（15+ 字段）
+│   │   ├── base.py                      # ToolResult：工具执行结果封装
+│   │   ├── registry.py                  # ToolRegistry：注册 → 过滤 (ToolEntry + tags)
+│   │   ├── context.py                   # ToolUseContext：依赖注入载体
 │   │   ├── execution.py                 # StreamingToolExecutor：并发调度器
 │   │   ├── builtin/                     # 内置工具（每工具一个文件，自包含）
 │   │   │   ├── file_read.py             # 文本/图片/PDF/Jupyter 多格式读取
@@ -112,7 +112,7 @@ LangCode/
 │   │   │       └── python.py            # Python tree-sitter 实现
 │   │   └── mcp/                         # MCP 适配器
 │   │       ├── client.py                # MCP 客户端（stdio 传输）
-│   │       └── adapter.py               # MCP Tool → LangCode Tool
+│   │       └── adapter.py               # MCP Tool → LangChain BaseTool
 │   │
 │   ├── agents/                          # Layer 2: Agent 系统
 │   │   ├── definition.py                # AgentDefinition：声明式定义（内置 2 个）
@@ -137,9 +137,9 @@ LangCode/
 │   │   └── repl.py                      # 命令行 REPL：AsyncGenerator 消费 + 流式输出
 │   │
 │   ├── resources/                       # 提示词模板
-│   └── main.py                          # 入口
+│   └── main.py                          # 入口（composition root）
 │
-└── tests/                               # 测试
+└── tests/                               # 测试（482 tests）
     ├── conftest.py                      # 共享 fixtures
     ├── test_main.py                     # 入口测试
     ├── shared/                          # 工具/AST/MCP 测试
@@ -323,14 +323,15 @@ CONFIG_DEFAULTS = {
 
 | 指标 | 数值 |
 |------|------|
-| 代码规模 | **7K LOC** |
+| 代码规模 | **7K+ LOC** |
 | 模块数 | **71 modules** |
-| 测试数 | **486 tests** |
+| 测试数 | **482 tests** |
 | 内置工具 | **30+ built-in tools** |
 
 **为什么选择 LangCode：**
 
 - **对标 Claude Code 工程水准** — 六层架构（Layer 0–5），层间依赖严格单向，零循环引用
+- **统一工具接口** — LangChain @tool + ToolRegistry(tags)，并发调度（TAG_CONCURRENT_SAFE 驱动），无需冗余 Tool ABC
 - **纯 tool calling 路由** — 无脆弱的文本解析，LLM 输出结构化 tool_calls 直接驱动分发
 - **代码修改后强制验证** — auto_verify 不靠提示词"请检查"，而是图节点强制跑 compile/import/lint/test
 - **AST 语义级编辑** — 基于 tree-sitter 的重命名、加参数、加方法，比纯文本替换更安全
@@ -349,7 +350,7 @@ CONFIG_DEFAULTS = {
 
 ## 设计文档
 
-完整架构设计见 [ARCHITECTURE_v2.md](./ARCHITECTURE_v2.md)，包含：
+完整架构设计见 [ARCHITECTURE_v2.md](./ARCHITECTURE_v2.md)（v2.1），包含：
 
 - 五层架构详细设计与层间依赖规则
 - Plan 生命周期全流程（创建 → 执行 → 反思 → 完成）

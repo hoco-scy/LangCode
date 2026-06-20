@@ -1644,24 +1644,25 @@ class ToolUseContext:
         ...
 ```
 
-### 6.3 tools/execution.py — 工具调度器（v2.1 简化）
+### 6.3 tools/execution.py — 并发调度器（v2.1 适配）
 
-> **v2.1 变更**：从"并发调度器"简化为"串行调度器"。LangChain BaseTool 无 `is_concurrency_safe` 接口，且当前工具集（文件读写、shell、AST）均为 I/O 密集型，并发收益有限。未来可通过 tags 恢复并发支持。
+> **v2.1 变更**：适配 LangChain BaseTool（`ainvoke`/`invoke` 替代 `call`）。`is_concurrency_safe` 由 `ToolRegistry.is_concurrent_safe(name)` 驱动（基于 `TAG_CONCURRENT_SAFE` tag），功能等价于 v2.0 的 `Tool.is_concurrency_safe(args)`。
 
 ```python
 class StreamingToolExecutor:
-    """串行执行所有工具调用。Yields ToolResult。"""
+    """并发调度器 — 分区策略：
 
-    async def execute_all(self) -> AsyncGenerator[ToolResult, None]:
-        for tracked in self._tracked:
-            result = await self._execute_one(tracked)
-            if result is not None:
-                yield result
+    1. 连续的 concurrent_safe 工具 → 一组 → asyncio.gather 并行
+    2. 非 concurrent_safe 工具 → 各自独立串行
+    """
 
-    async def _execute_one(self, tracked: TrackedTool) -> ToolResult:
-        # LangChain BaseTool: invoke(dict) / ainvoke(dict) → str
-        result_str = await _invoke_tool(tracked.tool, tracked.tool_call["args"])
-        return ToolResult(data=result_str)
+    def _partition(self) -> list[dict]:
+        """按 TAG_CONCURRENT_SAFE 分组"""
+        ...
+
+    async def _execute_concurrent(self, tools) -> AsyncGenerator[ToolResult]:
+        """并发执行：asyncio.gather"""
+        ...
 ```
 
 ### 6.4 tools/builtin/ — 内置工具
@@ -2576,7 +2577,7 @@ Phase 5 (1-2天): 收尾
 | **核心循环** | queryLoop 状态机 (Continue/Terminal) | 无状态机 | query_loop 状态机 | ✅ |
 | **工具接口** | Tool<I,O,P> 泛型接口 (30+ 方法) | @tool 装饰器（无统一接口） | LangChain `@tool` + ToolResult（v2.1: 删除 Tool ABC） | ⚠️ 简化 |
 | **工具注册** | tools.ts 动态组装 + Feature Flag | main.py 手动组装列表 | ToolRegistry + ToolEntry tags（v2.1） | ✅ |
-| **并发调度** | StreamingToolExecutor (queued→executing→completed→yielded) | 串行执行 | StreamingToolExecutor 串行（v2.1: LangChain BaseTool 无并发接口） | ⚠️ 简化 |
+| **并发调度** | StreamingToolExecutor (queued→executing→completed→yielded) | 串行执行 | StreamingToolExecutor（v2.1: TAG_CONCURRENT_SAFE 驱动，功能等价） | ✅ |
 | **权限模式** | 6 层 (plan/acceptEdits/default/dontAsk/bypass/auto) | 2 层 (plan/build) | 5 层 (plan/acceptEdits/default/dontAsk/bypass) | ✅ |
 | **权限规则** | Allow/Deny/Ask + 多源合并（policy>project>user） | 无规则引擎 | RuleEngine + 三层优先级 | ✅ |
 | **Bash 安全** | 引号状态机 + 11种命令替换检测 + Zsh检测 | 无 | BashClassifier（同理念） | ✅ |
@@ -2692,3 +2693,9 @@ L2 → L3:               NONE ✅
 L1 intra-module:       完全隔离 ✅
 main.py composition:   正确连接 L0-L5 ✅
 ```
+
+### A.6 并发调度器恢复
+
+初始 v2.1 将 `StreamingToolExecutor` 简化为串行执行（理由：LangChain BaseTool 无 `is_concurrency_safe` 接口）。经审查确认这是错误简化——生产级 Agent 必须支持并发工具执行。
+
+修复方案：`is_concurrency_safe` 改为 `TAG_CONCURRENT_SAFE` tag 驱动，通过 `ToolRegistry.is_concurrent_safe(name)` 查询，功能等价于 v2.0 的 `Tool.is_concurrency_safe(args)`。分区逻辑（`_partition`）和并发执行（`asyncio.gather`）完整保留。
