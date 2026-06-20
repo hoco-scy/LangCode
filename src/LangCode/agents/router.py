@@ -55,7 +55,8 @@ def process_tool_results(state: dict) -> dict:
         return updates
 
     # 已处理过的 tool_call id，防止跨多轮重复消费
-    processed = set(state.get("_processed_tool_ids", ""))
+    _ids_str = state.get("_processed_tool_ids", "")
+    processed = set(_ids_str.split(",")) if _ids_str else set()
 
     for tc in last_ai.tool_calls:
         name = tc.get("name", "")

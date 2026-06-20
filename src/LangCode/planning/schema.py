@@ -37,9 +37,9 @@ class Plan(BaseModel):
         if step:
             step.status = "done"
             step.result = result
-        self.current_step += 1
-        if self.current_step >= len(self.steps):
-            self.status = "completed"
+            self.current_step += 1
+            if self.current_step >= len(self.steps):
+                self.status = "completed"
 
     def mark_current_failed(self, error: str):
         """标记当前步骤失败"""
